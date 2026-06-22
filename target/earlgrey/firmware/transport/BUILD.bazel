@@ -112,9 +112,13 @@ rust_process(
     tags = ["kernel"],
     visibility = ["//visibility:public"],
     deps = [
+        "//hal/blocking/flash",
+        "//services/flash:client",
         "//target/earlgrey/services/sysmgr:server",
         "//util/error",
+        "//util/io",
         "//util/ipc",
+        "//util/types",
         "//util/zfmt",
         "@pigweed//pw_kernel/userspace",
         "@pigweed//pw_status/rust:pw_status",

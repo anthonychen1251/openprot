@@ -28,6 +28,7 @@ rust_library(
     name = "server",
     srcs = [
         "server.rs",
+        "updater.rs",
     ],
     crate_name = "earlgrey_sysmgr_server",
     edition = "2024",
@@ -37,6 +38,7 @@ rust_library(
         "//target/earlgrey/registers:rstmgr",
         "//target/earlgrey/util",
         "//util/error",
+        "//util/io",
         "//util/ipc",
         "//util/types",
         "//util/zfmt",
