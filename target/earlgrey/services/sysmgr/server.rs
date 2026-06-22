@@ -3,6 +3,7 @@
 
 #![no_std]
 #![allow(deprecated)]
+pub mod updater;
 use zerocopy::{FromBytes, IntoBytes};
 
 use earlgrey_sysmgr_client::*;
@@ -21,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 #[allow(dead_code)]
 pub struct SysmgrServer {
-    info: BootInfo,
+    pub info: BootInfo,
     retram: &'static mut RetRam,
 }
 

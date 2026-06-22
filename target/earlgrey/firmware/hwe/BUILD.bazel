@@ -108,6 +108,8 @@ rust_process(
     tags = ["kernel"],
     visibility = ["//visibility:public"],
     deps = [
+        "//hal/blocking/flash",
+        "//services/flash:client",
         "//target/earlgrey/drivers:spi_flash",
         "//target/earlgrey/drivers:spi_host",
         "//target/earlgrey/registers:spi_host",
