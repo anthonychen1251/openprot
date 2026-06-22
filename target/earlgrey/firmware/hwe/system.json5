@@ -17,7 +17,7 @@
   apps: [
     {
       name: "hwe",
-      flash_size_bytes: 49152,
+      flash_size_bytes: 65536,
       processes: [
         {
           name: "logmgr",
@@ -73,7 +73,7 @@
         },
         {
           name: "sysmgr",
-          ram_size_bytes: 4096,
+          ram_size_bytes: 8192,
           objects: [
             {
               name: "logger_sysmgr",

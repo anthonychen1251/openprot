@@ -114,6 +114,7 @@ rust_process(
         "//target/earlgrey/drivers:spi_host",
         "//target/earlgrey/registers:spi_host",
         "//target/earlgrey/services/sysmgr:server",
+        "//target/earlgrey/util",
         "//util/error",
         "//util/io",
         "//util/ipc",
