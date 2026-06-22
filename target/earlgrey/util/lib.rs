@@ -8,6 +8,7 @@ pub mod boot_svc;
 pub mod clock;
 pub mod error;
 pub mod flash;
+pub mod manifest;
 mod misc;
 mod mubi;
 mod perso_tlv;

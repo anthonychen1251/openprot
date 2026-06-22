@@ -90,7 +90,8 @@ SECTIONS
         LONG(0xa5a5a5a5);  /* usage_constraints.manuf_state_creator */
         LONG(0xa5a5a5a5);  /* usage_constraints.manuf_state_owner */
         LONG(0xa5a5a5a5);  /* usage_constraints.life_cycle_state */
-        . += 384; /* rsa_modulus */
+        . += 380; /* rsa_modulus */
+        LONG(_manifest); /* manifest_base_address */
         LONG(0x739); /* . = . + 4; address_translation (HardenedTrue) */
         LONG(0x3042544f); /* . = . + 4; identifier (OTB0) */
         SHORT(0x6c47); /* . = . + 2; manifest_version.minor */
