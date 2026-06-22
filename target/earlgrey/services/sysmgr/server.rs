@@ -10,6 +10,7 @@ use earlgrey_sysmgr_client::*;
 use earlgrey_util::boot_svc::NextBl0SlotRequest;
 use earlgrey_util::error as eg_error;
 use earlgrey_util::ret_ram::RetRam;
+use earlgrey_util::tags::BootSlot;
 use earlgrey_util::CheckDigest;
 use earlgrey_util::GetData;
 use util_error::{self as error, ErrorCode};
@@ -82,6 +83,23 @@ impl SysmgrServer {
 
         util_zfmt::info!(info.clone());
         Ok(Self { info, retram })
+    }
+
+    /// Updates the boot slot preference in Retention RAM.
+    pub fn set_boot_policy(&mut self, next_slot: BootSlot, pref_slot: BootSlot) {
+        let request: &mut NextBl0SlotRequest = self.retram.boot_svc.get_mut();
+        request.next_bl0_slot = next_slot;
+        request.primary_bl0_slot = pref_slot;
+        self.retram
+            .boot_svc
+            .set_digest(|data| Sha256::digest(data).into());
+    }
+
+    /// Triggers a system reset.
+    pub fn request_reboot(&self) -> ! {
+        let mut rstmgr = unsafe { RstmgrAon::new() };
+        rstmgr.regs_mut().reset_req().write(|_| 6u32.into());
+        loop {}
     }
 
     fn handle_get_boot_info<'a>(

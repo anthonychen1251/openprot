@@ -73,7 +73,7 @@
         },
         {
           name: "sysmgr",
-          ram_size_bytes: 4096,
+          ram_size_bytes: 8192,
           objects: [
             {
               name: "logger_sysmgr",
@@ -89,6 +89,12 @@
               name: "sysmgr_thread",
               kernel_stack_size_bytes: 2048,
               type: "thread"
+            },
+            {
+              name: "flash_sysmgr",
+              type: "channel_initiator",
+              handler_process: "flash_server",
+              handler_object_name: "flash_service"
             },
             {
               name: "spi_flash_sysmgr",
