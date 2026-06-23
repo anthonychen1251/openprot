@@ -123,6 +123,7 @@ rust_process(
         "//util/zfmt",
         "@pigweed//pw_kernel/userspace",
         "@pigweed//pw_status/rust:pw_status",
+        "@rust_crates//:zerocopy",
         "@zfmt//zfmt",
     ],
 )

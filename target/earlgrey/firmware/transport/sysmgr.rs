@@ -6,6 +6,7 @@
 
 use earlgrey_sysmgr_server::SysmgrServer;
 use earlgrey_util::EarlgreyFlashAddress;
+use earlgrey_util::tags::BootSlot;
 use hal_flash::{Flash, FlashAddress};
 use pw_status::Error;
 use services_flash_client::FlashIpcClient;
@@ -17,6 +18,7 @@ use util_error::{AsStatus, ErrorCode};
 use util_io::RandomRead;
 use util_ipc::IpcHandle;
 use util_zfmt::messages::{ProcessExit, ProcessStart};
+use zerocopy::IntoBytes;
 use zfmt::Zfmt;
 
 #[derive(Zfmt)]
@@ -61,6 +63,13 @@ struct FlashWriteFailed {
 #[zfmt(format = "Firmware update installation complete! Rebooting into the new slot...")]
 struct UpdateComplete {}
 
+#[derive(Zfmt)]
+#[zfmt(format = "Transport Application version: {major}.{minor}")]
+struct TransportVersionLog {
+    major: u32,
+    minor: u32,
+}
+
 /// Helper function to erase and write a firmware partition page-by-page.
 fn flash_write_partition(
     flash_client: &mut FlashIpcClient,
@@ -99,9 +108,40 @@ fn flash_write_partition(
     Ok(())
 }
 
+/// Helper function to read the running Transport application's manifest version from internal EFLASH.
+fn read_transport_version(flash_client: &mut FlashIpcClient, boot_slot: BootSlot) -> Option<(u32, u32)> {
+    use earlgrey_sysmgr_server::updater::Manifest;
+
+    let offset = match boot_slot {
+        BootSlot::SlotB => 0x90000u32,
+        _ => 0x10000u32,
+    };
+
+    let mut manifest = Manifest::new_zeroed();
+    if flash_client
+        .read(FlashAddress::data(offset), manifest.as_mut_bytes())
+        .is_ok()
+    {
+        Some((manifest.version_major, manifest.version_minor))
+    } else {
+        None
+    }
+}
+
 fn sysmgr_server() -> Result<(), ErrorCode> {
     // SysmgrServer::new() will read boot log from retram and log boot info.
     let mut server = SysmgrServer::new()?;
+
+    // Instantiate EFLASH client to read our own version and for future updates
+    let flash_ipc_handle = IpcHandle::new(handle::FLASH_SYSMGR);
+    let mut flash_client = FlashIpcClient::new(flash_ipc_handle).ok();
+
+    // Read and print the Transport application version from its manifest
+    if let Some(ref mut client) = flash_client {
+        if let Some((major, minor)) = read_transport_version(client, server.info.app.boot_slot) {
+            util_zfmt::info!(TransportVersionLog { major, minor });
+        }
+    }
 
     // Connect to SPI Flash service on flash_server
     let spi_flash_handle = IpcHandle::new(handle::SPI_FLASH_SYSMGR);
@@ -126,9 +166,8 @@ fn sysmgr_server() -> Result<(), ErrorCode> {
                     owner_offset: target_owner,
                 });
 
-                // Instantiate the EFLASH client
-                let flash_ipc_handle = IpcHandle::new(handle::FLASH_SYSMGR);
-                if let Ok(mut flash_client) = FlashIpcClient::new(flash_ipc_handle) {
+                // Reuse the EFLASH client we instantiated at boot!
+                if let Some(ref mut client) = flash_client {
                     // 1. Write ROM_EXT
                     util_zfmt::info!(FlashingRegion {
                         region: "ROM_EXT",
@@ -136,7 +175,7 @@ fn sysmgr_server() -> Result<(), ErrorCode> {
                         len: bundle.rom_ext_len as u32,
                     });
                     match flash_write_partition(
-                        &mut flash_client,
+                        client,
                         &mut reader,
                         bundle.offset,
                         target_rom_ext,
@@ -152,7 +191,7 @@ fn sysmgr_server() -> Result<(), ErrorCode> {
                                 len: bundle.owner_len as u32,
                             });
                             match flash_write_partition(
-                                &mut flash_client,
+                                client,
                                 &mut reader,
                                 bundle.offset + 64 * 1024,
                                 target_owner,
