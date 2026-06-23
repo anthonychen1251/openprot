@@ -133,6 +133,10 @@ rust_process(
     tags = ["kernel"],
     visibility = ["//visibility:public"],
     deps = [
+        "//hal/blocking",
+        "//target/earlgrey/drivers:gpio",
+        "//target/earlgrey/drivers:pinmux",
+        "//target/earlgrey/util",
         "//util/error",
         "//util/zfmt",
         "@pigweed//pw_kernel/userspace",
