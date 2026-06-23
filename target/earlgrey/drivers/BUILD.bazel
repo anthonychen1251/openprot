@@ -86,3 +86,34 @@ rust_library(
         "@ureg",
     ],
 )
+
+rust_library(
+    name = "spi_host",
+    srcs = ["spi_host.rs"],
+    crate_name = "earlgrey_spi_host",
+    edition = "2024",
+    target_compatible_with = TARGET_COMPATIBLE_WITH,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//target/earlgrey/registers:spi_host",
+        "//util/error",
+        "//util/regcpy",
+        "@rust_crates//:aligned",
+        "@ureg",
+    ],
+)
+
+rust_library(
+    name = "spi_flash",
+    srcs = ["spi_flash.rs"],
+    crate_name = "earlgrey_spi_flash",
+    edition = "2024",
+    target_compatible_with = TARGET_COMPATIBLE_WITH,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":spi_host",
+        "//util/error",
+        "//util/io",
+        "@pigweed//pw_status/rust:pw_status",
+    ],
+)

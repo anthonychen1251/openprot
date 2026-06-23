@@ -108,8 +108,12 @@ rust_process(
     tags = ["kernel"],
     visibility = ["//visibility:public"],
     deps = [
+        "//target/earlgrey/drivers:spi_flash",
+        "//target/earlgrey/drivers:spi_host",
+        "//target/earlgrey/registers:spi_host",
         "//target/earlgrey/services/sysmgr:server",
         "//util/error",
+        "//util/io",
         "//util/ipc",
         "//util/zfmt",
         "@pigweed//pw_kernel/userspace",

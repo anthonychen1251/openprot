@@ -109,6 +109,12 @@
               type: "device",
               start_address: 0x40140000,
               size_bytes: 0x100
+            },
+            {
+              name: "spi_host0",
+              type: "device",
+              start_address: 0x40300000,
+              size_bytes: 0x40
             }
           ]
         },

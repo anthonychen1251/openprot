@@ -17,6 +17,11 @@ use util_zfmt::messages::{ProcessExit, ProcessStart};
 fn sysmgr_server() -> Result<(), ErrorCode> {
     // SysmgrServer::new() will read boot log from retram and log boot info.
     let mut server = SysmgrServer::new()?;
+
+    // ASSUMPTION: Pinmux settings for SPI Host 0 are assumed to be pre-configured by
+    // the ROM_EXT stage or hardware/FPGA defaults. If migrating to a new development
+    // platform in the future, explicit pinmux setup may need to be added here.
+
     let service_channel = IpcHandle::new(handle::SYSMGR_SERVICE);
     let mut buf = [0u8; 1024];
 
