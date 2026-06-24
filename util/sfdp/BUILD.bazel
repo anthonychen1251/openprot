@@ -1,0 +1,25 @@
+# Licensed under the Apache-2.0 license
+# SPDX-License-Identifier: Apache-2.0
+
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "sfdp",
+    srcs = ["mod.rs"],
+    crate_name = "util_sfdp",
+    edition = "2024",
+    proc_macro_deps = [
+        "@rust_crates//:bitfield-struct",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//util/error",
+        "//util/io",
+        "@rust_crates//:zerocopy",
+    ],
+)
+
+rust_test(
+    name = "sfdp_test",
+    crate = ":sfdp",
+)
