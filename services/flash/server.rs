@@ -86,11 +86,11 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashIpcServer<TFlash> {
         let req_data = data.get(..reqsz).ok_or(error::IPC_ERROR_BAD_REQ_LEN)?;
         let op = ReadOp::read_from_bytes(req_data).map_err(|_| error::IPC_ERROR_BAD_REQ_LEN)?;
         let length = op.length as usize;
-        if length > data.len() {
-            return Err(error::FLASH_GENERIC_INVALID_SIZE);
-        }
-        self.flash.read(op.address, &mut data[..length])?;
-        Ok(&data[..length])
+        let target = data
+            .get_mut(..length)
+            .ok_or(error::FLASH_GENERIC_INVALID_SIZE)?;
+        self.flash.read(op.address, target)?;
+        Ok(target)
     }
 
     fn handle_op<'a>(
@@ -115,6 +115,9 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashIpcServer<TFlash> {
     /// before calling this method.
     pub fn handle_one(&mut self, ipc: &IpcHandle, data: &mut [u8]) -> Result<(), ErrorCode> {
         let len = ipc.read(0, data).map_err(ErrorCode::kernel_error)?;
+        if data.len() < core::mem::size_of::<Opcode>() || len < core::mem::size_of::<Opcode>() {
+            return Err(error::IPC_ERROR_BAD_REQ_LEN);
+        }
         let (opcode, reqrsp) = data.split_at_mut(core::mem::size_of::<Opcode>());
         let opcode = Opcode::read_from_bytes(opcode).map_err(|_| error::IPC_ERROR_BAD_REQ_LEN)?;
         let len = len.saturating_sub(core::mem::size_of::<Opcode>());
