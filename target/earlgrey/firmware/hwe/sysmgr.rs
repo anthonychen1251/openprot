@@ -72,6 +72,16 @@ struct HweVersionLog {
     minor: u32,
 }
 
+#[derive(Zfmt)]
+#[zfmt(format = "Owner block found at SPI Flash offset: 0x{offset:x}")]
+struct OwnerBlockFound {
+    offset: u32,
+}
+
+#[derive(Zfmt)]
+#[zfmt(format = "Owner block NOT found on SPI Flash!")]
+struct OwnerBlockNotFound {}
+
 /// Helper function to erase and write a firmware partition page-by-page.
 fn flash_write_partition(
     flash_client: &mut FlashIpcClient,
@@ -128,6 +138,29 @@ fn read_hwe_version(flash_client: &mut FlashIpcClient, boot_slot: BootSlot) -> O
     } else {
         None
     }
+}
+
+const K_TLV_TAG_OWNER: u32 = 0x524e574f;
+
+fn scan_owner_block(
+    flash: &mut impl RandomRead<Error = ErrorCode>,
+) -> Result<Option<usize>, ErrorCode> {
+    let flash_size = flash.size()?;
+    let page_size = 2048;
+    let mut offset = 0;
+    while offset + 2048 <= flash_size {
+        let mut buf = [0u8; 8];
+        if flash.read(offset, &mut buf).is_ok() {
+            let tag = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+            let length = u16::from_le_bytes(buf[4..6].try_into().unwrap());
+            let version_major = buf[6];
+            if tag == K_TLV_TAG_OWNER && length == 2048 && version_major == 0 {
+                return Ok(Some(offset));
+            }
+        }
+        offset += page_size;
+    }
+    Ok(None)
 }
 
 fn sysmgr_server() -> Result<(), ErrorCode> {
@@ -212,6 +245,15 @@ fn sysmgr_server() -> Result<(), ErrorCode> {
                             ) {
                                 Ok(()) => {
                                     util_zfmt::info!(FlashWriteSuccess { region: "Owner" });
+
+                                    match scan_owner_block(&mut spi_flash) {
+                                        Ok(Some(offset)) => {
+                                            util_zfmt::info!(OwnerBlockFound { offset: offset as u32 });
+                                        }
+                                        _ => {
+                                            util_zfmt::warn!(OwnerBlockNotFound {});
+                                        }
+                                    }
 
                                     // 3. Update boot slot preference to Owner staging slot
                                     server.set_boot_policy(
