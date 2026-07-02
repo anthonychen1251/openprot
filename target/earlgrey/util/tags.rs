@@ -177,3 +177,36 @@ impl RetRamVersion {
     /// Retention RAM layout version 4 ('RR04').
     pub const Version4: Self = Self(u32::from_le_bytes(*b"RR04"));
 }
+
+/// Identifies a manifest extension.
+#[derive(Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Zfmt)]
+#[zfmt(format = "{0:08x}")]
+#[repr(C)]
+pub struct ManifestExtId(pub u32);
+
+impl ManifestExtId {
+    /// Sphinx key extension identifier.
+    ///
+    /// This is a high HW constant with a relatively high HD from other identifiers.
+    pub const SPX_KEY: Self = Self(0x94ac01ec);
+    /// Sphinx signature extension identifier.
+    ///
+    /// This is a high HW constant with a relatively high HD from other identifiers.
+    pub const SPX_SIGNATURE: Self = Self(0xad77f84a);
+    /// Security version write extension identifier.
+    ///
+    /// This is a high HW constant with a relatively high HD from other identifiers.
+    pub const SEC_VER_WRITE: Self = Self(0x3f086a41);
+
+    /// Integration Specific Firmware Binding (ISFB) extension ('ISFB').
+    pub const ISFB: Self = Self(u32::from_le_bytes(*b"ISFB"));
+    /// Integration Specific Firmware Binding (ISFB) erase policy extension ('ISFE').
+    pub const ISFB_ERASE: Self = Self(u32::from_le_bytes(*b"ISFE"));
+    /// Owner transfer blob extension ('OWTB').
+    pub const OWNER_TRANSFER_BLOB: Self = Self(u32::from_le_bytes(*b"OWTB"));
+
+    /// Sphinx key extension name ('EXT0').
+    pub const SPX_KEY_NAME: Self = Self(u32::from_le_bytes(*b"EXT0"));
+    /// Sphinx signature extension name ('EXT1').
+    pub const SPX_SIGNATURE_NAME: Self = Self(u32::from_le_bytes(*b"EXT1"));
+}

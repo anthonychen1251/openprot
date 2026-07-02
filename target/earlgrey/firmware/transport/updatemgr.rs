@@ -66,6 +66,15 @@ struct FlashWriteFailed {
 #[zfmt(format = "Firmware update installation complete! Rebooting into the new slot...")]
 struct UpdateComplete {}
 
+#[derive(Zfmt)]
+#[zfmt(format = "Owner block found at SPI Flash offset: 0x{offset:x}")]
+struct OwnerBlockFound {
+    offset: u32,
+}
+
+#[derive(Zfmt)]
+#[zfmt(format = "Owner block NOT found on SPI Flash!")]
+struct OwnerBlockNotFound {}
 fn flash_write_partition(
     flash_client: &mut FlashIpcClient,
     spi_flash: &mut impl RandomRead<Error = ErrorCode>,
@@ -158,7 +167,7 @@ fn try_update() -> Result<(), ErrorCode> {
     flash_write_partition(
         &mut flash_client,
         &mut reader,
-        bundle.offset + rom_ext_size,
+        bundle.offset + update.rom_ext_size,
         update.app_start,
         bundle.owner_len,
     )
@@ -170,6 +179,14 @@ fn try_update() -> Result<(), ErrorCode> {
         e
     })?;
     util_zfmt::info!(FlashWriteSuccess { region: "Owner" });
+
+    if let Some(offset) = bundle.owner_block_offset {
+        util_zfmt::info!(OwnerBlockFound {
+            offset: offset as u32
+        });
+    } else {
+        util_zfmt::warn!(OwnerBlockNotFound {});
+    }
 
     let policy = earlgrey_sysmgr_client::BootPolicy {
         pref_slot: update.app,
@@ -192,6 +209,7 @@ fn updatemgr_process() -> Result<(), ErrorCode> {
                 let _ = sleep_until(SystemClock::now() + Duration::from_secs(1));
             }
         }
+        let _ = sleep_until(SystemClock::now() + Duration::from_secs(1));
     }
 
     let _ = sleep_until(Instant::MAX);

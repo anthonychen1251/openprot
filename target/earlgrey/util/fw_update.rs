@@ -7,8 +7,8 @@
 
 use earlgrey_sysmgr_client::BootInfo;
 use earlgrey_util::error::EG_ERROR_BOOT_SLOT_UNKNOWN;
-use earlgrey_util::manifest::Manifest;
-use earlgrey_util::tags::{BootSlot, ManifestIdentifier};
+use earlgrey_util::manifest::{Manifest, ManifestExtHeader};
+use earlgrey_util::tags::{BootSlot, ManifestExtId, ManifestIdentifier};
 use util_error::ErrorCode;
 use util_io::RandomRead;
 use zerocopy::IntoBytes;
@@ -148,10 +148,27 @@ impl FwUpdate {
             return Ok(None);
         }
 
+        let mut owner_block_offset = None;
+        for entry in &owner_hdr.extensions {
+            if entry.identifier == ManifestExtId::OWNER_TRANSFER_BLOB {
+                let ext_offset = entry.offset as usize;
+                if ext_offset > 0 {
+                    owner_block_offset = Some(
+                        offset
+                            + self.rom_ext_size
+                            + ext_offset
+                            + core::mem::size_of::<ManifestExtHeader>(),
+                    );
+                    break;
+                }
+            }
+        }
+
         Ok(Some(FirmwareBundle {
             offset,
             rom_ext_len,
             owner_len,
+            owner_block_offset,
         }))
     }
 }
@@ -160,4 +177,5 @@ pub struct FirmwareBundle {
     pub offset: usize,
     pub rom_ext_len: usize,
     pub owner_len: usize,
+    pub owner_block_offset: Option<usize>,
 }

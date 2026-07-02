@@ -3,8 +3,30 @@
 
 //! Manifest parsing utilities for Earlgrey firmware images.
 
-use crate::tags::ManifestIdentifier;
+use crate::tags::{ManifestExtId, ManifestIdentifier};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+/// Manifest extension table entry.
+#[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct ManifestExtTableEntry {
+    /// Extension identifier.
+    ///
+    /// Must match the `identifier` value in the extension's header.
+    pub identifier: ManifestExtId,
+    /// Offset of this extension relative to the start of the manifest.
+    pub offset: u32,
+}
+
+/// Header format at the start of every manifest extension block.
+#[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct ManifestExtHeader {
+    /// Extension identifier.
+    pub identifier: ManifestExtId,
+    /// 4 ASCII characters for ease of debugging.
+    pub name: u32,
+}
 
 #[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
@@ -31,7 +53,7 @@ pub struct Manifest {
     pub code_start: u32,
     pub code_end: u32,
     pub entry_point: u32,
-    pub _pad: [u8; 120],
+    pub extensions: [ManifestExtTableEntry; 15],
 }
 
 impl Manifest {
@@ -59,7 +81,10 @@ impl Manifest {
             code_start: 0,
             code_end: 0,
             entry_point: 0,
-            _pad: [0u8; 120],
+            extensions: [ManifestExtTableEntry {
+                identifier: ManifestExtId(0),
+                offset: 0,
+            }; 15],
         }
     }
 }
