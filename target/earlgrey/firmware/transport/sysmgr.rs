@@ -5,8 +5,8 @@
 #![no_main]
 
 use earlgrey_sysmgr_server::SysmgrServer;
-use earlgrey_util::EarlgreyFlashAddress;
 use earlgrey_util::tags::BootSlot;
+use earlgrey_util::EarlgreyFlashAddress;
 use hal_flash::{Flash, FlashAddress};
 use pw_status::Error;
 use services_flash_client::FlashIpcClient;
@@ -70,6 +70,16 @@ struct TransportVersionLog {
     minor: u32,
 }
 
+#[derive(Zfmt)]
+#[zfmt(format = "Owner block found at SPI Flash offset: 0x{offset:x}")]
+struct OwnerBlockFound {
+    offset: u32,
+}
+
+#[derive(Zfmt)]
+#[zfmt(format = "Owner block NOT found on SPI Flash!")]
+struct OwnerBlockNotFound {}
+
 /// Helper function to erase and write a firmware partition page-by-page.
 fn flash_write_partition(
     flash_client: &mut FlashIpcClient,
@@ -109,7 +119,10 @@ fn flash_write_partition(
 }
 
 /// Helper function to read the running Transport application's manifest version from internal EFLASH.
-fn read_transport_version(flash_client: &mut FlashIpcClient, boot_slot: BootSlot) -> Option<(u32, u32)> {
+fn read_transport_version(
+    flash_client: &mut FlashIpcClient,
+    boot_slot: BootSlot,
+) -> Option<(u32, u32)> {
     use earlgrey_sysmgr_server::updater::Manifest;
 
     let offset = match boot_slot {
@@ -126,6 +139,31 @@ fn read_transport_version(flash_client: &mut FlashIpcClient, boot_slot: BootSlot
     } else {
         None
     }
+}
+
+fn scan_owner_block(
+    flash: &mut impl RandomRead<Error = ErrorCode>,
+    owner_manifest_offset: usize,
+) -> Result<Option<usize>, ErrorCode> {
+    use earlgrey_sysmgr_server::updater::Manifest;
+    use zerocopy::IntoBytes;
+
+    let mut manifest = Manifest::new_zeroed();
+    flash.read(owner_manifest_offset, manifest.as_mut_bytes())?;
+
+    // Look for the OWTB extension
+    const K_MANIFEST_EXT_ID_OWNER_TRANSFER_BLOB: u32 = 0x4254574f;
+
+    for entry in &manifest.extensions {
+        if entry.identifier == K_MANIFEST_EXT_ID_OWNER_TRANSFER_BLOB {
+            let offset = entry.offset as usize;
+            if offset > 0 {
+                // Owner block starts at offset + 8 (after 8 bytes extension header)
+                return Ok(Some(owner_manifest_offset + offset + 8));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn sysmgr_server() -> Result<(), ErrorCode> {
@@ -199,6 +237,17 @@ fn sysmgr_server() -> Result<(), ErrorCode> {
                             ) {
                                 Ok(()) => {
                                     util_zfmt::info!(FlashWriteSuccess { region: "Owner" });
+
+                                    match scan_owner_block(&mut reader, bundle.offset + 64 * 1024) {
+                                        Ok(Some(offset)) => {
+                                            util_zfmt::info!(OwnerBlockFound {
+                                                offset: offset as u32
+                                            });
+                                        }
+                                        _ => {
+                                            util_zfmt::warn!(OwnerBlockNotFound {});
+                                        }
+                                    }
 
                                     // 3. Update boot slot preference to Owner staging slot
                                     server.set_boot_policy(

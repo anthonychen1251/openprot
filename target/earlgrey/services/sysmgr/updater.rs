@@ -8,6 +8,13 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 #[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
+pub struct ManifestExtTableEntry {
+    pub identifier: u32,
+    pub offset: u32,
+}
+
+#[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
 pub struct Manifest {
     pub signature: [u8; 816],
     pub address_translation: u32,
@@ -24,7 +31,7 @@ pub struct Manifest {
     pub code_start: u32,
     pub code_end: u32,
     pub entry_point: u32,
-    pub _pad: [u8; 120],
+    pub extensions: [ManifestExtTableEntry; 15],
 }
 
 impl Manifest {
@@ -45,7 +52,10 @@ impl Manifest {
             code_start: 0,
             code_end: 0,
             entry_point: 0,
-            _pad: [0u8; 120],
+            extensions: [ManifestExtTableEntry {
+                identifier: 0,
+                offset: 0,
+            }; 15],
         }
     }
 }
