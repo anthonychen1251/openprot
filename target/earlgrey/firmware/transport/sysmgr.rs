@@ -5,7 +5,7 @@
 #![no_main]
 
 use earlgrey_sysmgr_server::SysmgrServer;
-use earlgrey_util::tags::BootSlot;
+use earlgrey_util::tags::{BootSlot, OwnershipState};
 use earlgrey_util::EarlgreyFlashAddress;
 use hal_flash::{Flash, FlashAddress};
 use pw_status::Error;
@@ -79,6 +79,28 @@ struct OwnerBlockFound {
 #[derive(Zfmt)]
 #[zfmt(format = "Owner block NOT found on SPI Flash!")]
 struct OwnerBlockNotFound {}
+
+#[derive(Zfmt)]
+#[zfmt(format = "Flashing owner block to Info Page 3 (OwnerSlot1)...")]
+struct FlashingOwnerBlock {}
+
+#[derive(Zfmt)]
+#[zfmt(format = "Successfully flashed owner block to Info Page 3!")]
+struct FlashingOwnerBlockSuccess {}
+
+#[derive(Zfmt)]
+#[zfmt(format = "Failed to flash owner block! Status: 0x{status:08x}")]
+struct FlashingOwnerBlockFailed {
+    status: u32,
+}
+
+#[derive(Zfmt)]
+#[zfmt(
+    format = "Owner block update is not allowed in current state (mode = 0x{mode:08x}). Skipping."
+)]
+struct OwnerBlockUpdateNotAllowed {
+    mode: u32,
+}
 
 /// Helper function to erase and write a firmware partition page-by-page.
 fn flash_write_partition(
@@ -166,6 +188,44 @@ fn scan_owner_block(
     Ok(None)
 }
 
+fn flash_owner_block(
+    flash_client: &mut FlashIpcClient,
+    spi_flash: &mut impl RandomRead<Error = ErrorCode>,
+    src_offset: usize,
+    ownership_state: OwnershipState,
+) -> Result<(), ErrorCode> {
+    if ownership_state == OwnershipState::LockedOwner {
+        let mut update_mode_bytes = [0u8; 4];
+        flash_client.read(FlashAddress::info(1, 2, 20), &mut update_mode_bytes)?;
+        let update_mode = u32::from_le_bytes(update_mode_bytes);
+
+        const OWNERSHIP_UPDATE_MODE_ANY_VERSION: u32 = 0x56594e41;
+
+        if update_mode != OWNERSHIP_UPDATE_MODE_ANY_VERSION {
+            util_zfmt::warn!(OwnerBlockUpdateNotAllowed { mode: update_mode });
+            return Ok(());
+        }
+    }
+
+    let dest_addr = FlashAddress::info(1, 3, 0); // Bank 1, Page 3, Offset 0
+    let (_, page_size, _) = flash_client.geometry()?;
+
+    util_zfmt::info!(FlashingOwnerBlock {});
+
+    // 1. Erase target page in info partition
+    flash_client.erase(dest_addr, page_size)?;
+
+    // 2. Read owner block from SPI flash
+    let mut buf = [0u8; 2048];
+    spi_flash.read(src_offset, &mut buf)?;
+
+    // 3. Write owner block to target info page
+    flash_client.program(dest_addr, &buf)?;
+
+    util_zfmt::info!(FlashingOwnerBlockSuccess {});
+    Ok(())
+}
+
 fn sysmgr_server() -> Result<(), ErrorCode> {
     // SysmgrServer::new() will read boot log from retram and log boot info.
     let mut server = SysmgrServer::new()?;
@@ -243,6 +303,24 @@ fn sysmgr_server() -> Result<(), ErrorCode> {
                                             util_zfmt::info!(OwnerBlockFound {
                                                 offset: offset as u32
                                             });
+
+                                            let state = server.info.ownership.state;
+                                            if state == OwnershipState::UnlockedAny
+                                                || state == OwnershipState::UnlockedSelf
+                                                || state == OwnershipState::UnlockedEndorsed
+                                                || state == OwnershipState::LockedOwner
+                                            {
+                                                if let Err(e) = flash_owner_block(
+                                                    client,
+                                                    &mut reader,
+                                                    offset,
+                                                    state,
+                                                ) {
+                                                    util_zfmt::error!(FlashingOwnerBlockFailed {
+                                                        status: e.0.get()
+                                                    });
+                                                }
+                                            }
                                         }
                                         _ => {
                                             util_zfmt::warn!(OwnerBlockNotFound {});
