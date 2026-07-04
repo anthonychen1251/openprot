@@ -45,6 +45,7 @@ fn flash_server() -> Result<(), ErrorCode> {
         driver.set_info_permission(FlashAddress::info(0, i, 0), Permission::FULL_ACCESS)?;
         driver.set_info_permission(FlashAddress::info(1, i, 0), Permission::FULL_ACCESS)?;
     }
+    driver.set_info_permission(FlashAddress::info(1, 3, 0), Permission::FULL_ACCESS)?;
     let flash = BlockingFlash {
         driver,
         blocking: FlashCtrlInterrupt,
