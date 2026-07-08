@@ -146,6 +146,14 @@
               type: "channel_handler"
             },
             {
+              name: "spi_flash_service",
+              type: "channel_handler"
+            },
+            {
+              name: "flash_wait_group",
+              type: "wait_group"
+            },
+            {
               name: "flash_interrupts",
               type: "interrupt",
               irqs: [
@@ -169,6 +177,12 @@
               type: "device",
               start_address: 0x41000000,
               size_bytes: 0x200
+            },
+            {
+              name: "spi_host0",
+              type: "device",
+              start_address: 0x40300000,
+              size_bytes: 0x40
             }
           ]
         },

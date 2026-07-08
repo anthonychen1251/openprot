@@ -6,15 +6,17 @@
 
 use flash_server_codegen::{handle, signals};
 use pw_status::Error;
-use userspace::time::Instant;
+use userspace::time::{sleep_until, Clock, Duration, Instant, SystemClock};
 use userspace::{process_entry, syscall};
-use util_error::{AsStatus, ErrorCode};
+use util_error::{AsStatus, ErrorCode, KERNEL_ERROR_INTERNAL};
 use util_zfmt::messages::{ProcessExit, ProcessStart};
 
 use earlgrey_util::EarlgreyFlashAddress;
 use eflash_driver::{EmbeddedFlash, Permission};
 use hal_flash::{BlockingFlash, FlashAddress};
 use services_flash_server::FlashIpcServer;
+use spi_flash::SpiFlash;
+use spi_host::SpiHost0;
 use util_ipc::IpcHandle;
 use util_types::Blocking;
 
@@ -37,29 +39,70 @@ impl Blocking for FlashCtrlInterrupt {
     }
 }
 
-fn flash_server() -> Result<(), ErrorCode> {
-    let mut driver =
-        EmbeddedFlash::new_with_interrupts(unsafe { flash_ctrl_core::FlashCtrl::new() });
-    driver.set_default_permission(Permission::FULL_ACCESS);
-    for i in 5..9 {
-        driver.set_info_permission(FlashAddress::info(0, i, 0), Permission::FULL_ACCESS)?;
-        driver.set_info_permission(FlashAddress::info(1, i, 0), Permission::FULL_ACCESS)?;
+struct SpiFlashSleep;
+
+impl Blocking for SpiFlashSleep {
+    fn wait_for_notification(&self) {
+        let _ = sleep_until(SystemClock::now() + Duration::from_millis(1));
     }
-    let flash = BlockingFlash {
-        driver,
+}
+
+fn flash_server() -> Result<(), ErrorCode> {
+    let mut eflash_driver =
+        EmbeddedFlash::new_with_interrupts(unsafe { flash_ctrl_core::FlashCtrl::new() });
+    eflash_driver.set_default_permission(Permission::FULL_ACCESS);
+    for i in 5..9 {
+        eflash_driver.set_info_permission(FlashAddress::info(0, i, 0), Permission::FULL_ACCESS)?;
+        eflash_driver.set_info_permission(FlashAddress::info(1, i, 0), Permission::FULL_ACCESS)?;
+    }
+    let eflash = BlockingFlash {
+        driver: eflash_driver,
         blocking: FlashCtrlInterrupt,
     };
-    let mut flash_server = FlashIpcServer::new(flash);
+    let mut eflash_server = FlashIpcServer::new(eflash);
+
+    let spi_host0 = unsafe { SpiHost0::new() };
+    let mut spi_host = earlgrey_spi_host::SpiHost::new(spi_host0);
+    spi_host.init().map_err(|_| KERNEL_ERROR_INTERNAL)?;
+
+    let blocking = SpiFlashSleep;
+    let mut spi_flash = SpiFlash::new(spi_host, blocking);
+    spi_flash.init().map_err(|_| KERNEL_ERROR_INTERNAL)?;
+    let mut spi_flash_server = FlashIpcServer::new(spi_flash);
+
+    syscall::wait_group_add(
+        handle::FLASH_WAIT_GROUP,
+        handle::FLASH_SERVICE,
+        syscall::Signals::READABLE,
+        1, // token 1 = EFlash
+    )
+    .map_err(ErrorCode::kernel_error)?;
+
+    syscall::wait_group_add(
+        handle::FLASH_WAIT_GROUP,
+        handle::SPI_FLASH_SERVICE,
+        syscall::Signals::READABLE,
+        2, // token 2 = SPI Flash
+    )
+    .map_err(ErrorCode::kernel_error)?;
+
     let mut buf = [0u8; 2064];
-    let ipc = IpcHandle::new(handle::FLASH_SERVICE);
+    let eflash_ipc = IpcHandle::new(handle::FLASH_SERVICE);
+    let spi_flash_ipc = IpcHandle::new(handle::SPI_FLASH_SERVICE);
     loop {
-        syscall::object_wait(
-            handle::FLASH_SERVICE,
+        let wait_result = syscall::object_wait(
+            handle::FLASH_WAIT_GROUP,
             syscall::Signals::READABLE,
             Instant::MAX,
         )
         .map_err(ErrorCode::kernel_error)?;
-        flash_server.handle_one(&ipc, &mut buf)?;
+
+        let token = wait_result.user_data;
+        if token == 1 {
+            eflash_server.handle_one(&eflash_ipc, &mut buf)?;
+        } else if token == 2 {
+            spi_flash_server.handle_one(&spi_flash_ipc, &mut buf)?;
+        }
     }
 }
 
