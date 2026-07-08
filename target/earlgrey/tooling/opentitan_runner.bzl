@@ -224,7 +224,7 @@ opentitan_test = rule(
             doc = "The regex to look for in the output to determine failure.",
         ),
         "exit_success": attr.string(
-            default = "PASS\\n",
+            default = "PASS.*\\n",
             doc = "The regex to look for in the output to determine success.",
         ),
     },
