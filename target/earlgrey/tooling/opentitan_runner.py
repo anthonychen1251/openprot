@@ -64,6 +64,12 @@ def _parse_args():
         action=argparse.BooleanOptionalAction,
         help="load a bitstream into the FPGA board",
     )
+    parser.add_argument(
+        "--clear-bitstream",
+        type=bool,
+        action=argparse.BooleanOptionalAction,
+        help="clear the FPGA bitstream before running",
+    )
 
     parser.add_argument(
         "--mechanism",
@@ -176,6 +182,21 @@ def load_bitstream(interface: str):
             "fpga",
             "load-bitstream",
             bitstream,
+        ],
+        check=True,
+    )
+
+
+def clear_bitstream(interface: str):
+    """Clear the FPGA bitstream."""
+    _LOG.info("Clearing bitstream for interface %s", interface)
+    subprocess.run(
+        [
+            _OTTO,
+            "--rcfile=",
+            f"--interface={interface}",
+            "fpga",
+            "clear-bitstream",
         ],
         check=True,
     )
@@ -294,6 +315,8 @@ def _main(args) -> int:
         pass
     else:
         transport_init(args.interface)
+        if args.clear_bitstream:
+            clear_bitstream(args.interface)
         if args.load_bitstream:
             load_bitstream(args.interface)
 

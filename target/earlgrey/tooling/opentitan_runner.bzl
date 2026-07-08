@@ -96,9 +96,11 @@ def _opentitan_runner_impl(ctx):
             executable = run_script,
         )]
 
+    clear_bitstream = ""
     if ctx.attr.interface == "hyper310" or ctx.attr.interface == "hyper340":
         load_bitstream = "--load-bitstream"
         mechanism = "--mechanism=bootstrap"
+        clear_bitstream = "--clear-bitstream"
     elif ctx.attr.interface == "teacup":
         load_bitstream = ""
         mechanism = "--mechanism=rescue"
@@ -111,10 +113,11 @@ def _opentitan_runner_impl(ctx):
         output = run_script,
         is_executable = True,
         content = """#!/bin/bash
-{runner} --interface {interface} {load_bitstream} {mechanism} --elf {elf} --bin {bin} {optional_args} "$@"
+{runner} --interface {interface} {clear_bitstream} {load_bitstream} {mechanism} --elf {elf} --bin {bin} {optional_args} "$@"
 """.format(
             runner = runner.short_path,
             interface = ctx.attr.interface,
+            clear_bitstream = clear_bitstream,
             load_bitstream = load_bitstream,
             mechanism = mechanism,
             elf = elf_file.short_path,
@@ -127,7 +130,7 @@ def _opentitan_runner_impl(ctx):
 
     return [DefaultInfo(
         runfiles = ctx.runfiles(
-            files = [elf_file, bin_file, runner],
+            files = [elf_file, bin_file, runner, ctx.executable._opentitantool],
             transitive_files = runner_files_depset,
         ),
         executable = run_script,
