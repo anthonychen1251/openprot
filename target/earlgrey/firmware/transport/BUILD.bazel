@@ -12,6 +12,8 @@ load("//target/earlgrey:defs.bzl", "TARGET_COMPATIBLE_WITH")
 load("//target/earlgrey/signing/keys:defs.bzl", "FPGA_ECDSA_KEY", "SILICON_ECDSA_KEY")
 load("//target/earlgrey/tooling:opentitan_runner.bzl", "opentitan_test")
 
+package(default_visibility = ["//visibility:public"])
+
 rust_process(
     name = "logmgr",
     srcs = [

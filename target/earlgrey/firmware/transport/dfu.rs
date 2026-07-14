@@ -334,12 +334,10 @@ impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
                         if entry.identifier == MANIFEST_EXT_ID_OWNER_TRANSFER_BLOB {
                             let offset = entry.offset;
                             // Ensure the entire fixed part of the extension (Header + 2048 byte blob)
-                            // fits within the reported signed region and overall length.
+                            // fits within the reported image length.
                             const EXT_FIXED_SIZE: usize = 8 + 2048;
                             if offset >= 1024
                                 && (offset as usize + EXT_FIXED_SIZE) <= (manifest.length as usize)
-                                && (offset as usize + EXT_FIXED_SIZE)
-                                    <= (manifest.signed_region_end as usize)
                             {
                                 owner_transfer_offset = Some(offset);
                                 util_zfmt::info!(FoundOwnerTransferBlob { offset });
@@ -436,7 +434,10 @@ impl<IPC: IpcChannel> DfuHandler for EarlgreyDfuHandler<IPC> {
     /// slot and requests a reboot.
     fn manifest(&mut self) -> Result<(), DfuStatus> {
         util_zfmt::info!(DfuManifest);
-        if self.update.state == FwUpdateState::Done {
+        if self.update.state == FwUpdateState::Done
+            || self.update.state == FwUpdateState::Application
+            || self.update.state == FwUpdateState::RomExt
+        {
             // Specialized Transport DFU Logic: Reprogram OWNER_PAGE_1 with Ownership Config
             if self.update.is_valid_app {
                 if let Some(offset) = self.update.owner_transfer_offset {
