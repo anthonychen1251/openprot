@@ -1,0 +1,20 @@
+# Licensed under the Apache-2.0 license
+# SPDX-License-Identifier: Apache-2.0
+
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//target/earlgrey:defs.bzl", "TARGET_COMPATIBLE_WITH")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "platform_config",
+    srcs = ["platform_config.rs"],
+    crate_name = "platform_config",
+    edition = "2024",
+    target_compatible_with = TARGET_COMPATIBLE_WITH,
+    deps = [
+        "//hal/blocking",
+        "//target/earlgrey/drivers:gpio",
+        "//target/earlgrey/drivers:pinmux",
+    ],
+)
