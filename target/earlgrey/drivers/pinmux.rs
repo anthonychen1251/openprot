@@ -97,6 +97,7 @@ pub enum Pull {
     Down,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PadConfig {
     pub pull: Pull,
     pub open_drain: bool,

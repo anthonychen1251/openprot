@@ -6,7 +6,7 @@
 pub use earlgrey_gpio::{EarlGreyGpio, EarlGreyPinConfig, GpioMask, GpioPin};
 pub use earlgrey_pinmux::{Pad, PadConfig, Pull};
 pub use openprot_hal_blocking::gpio_port::{
-    EdgeSensitivity, GpioInterrupt, GpioPort, InterruptOperation,
+    EdgeSensitivity, GpioInterrupt, GpioPort, InterruptOperation, PinMask,
 };
 
 pub const USB_PRESENCE_GPIO: GpioPin = GpioPin::Pin3;

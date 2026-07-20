@@ -10,11 +10,19 @@ use userspace::{process_entry, syscall};
 use util_error::{AsStatus, ErrorCode};
 use util_zfmt::messages::{ProcessExit, ProcessStart};
 
+use platform_config::{EarlGreyGpio, PinmuxConfig, PlatformConfig};
+
 /*
  * TODO: implement platform server.
  */
 
 fn platform_server() -> Result<(), ErrorCode> {
+    // Safety: Exclusive access to GPIO and Pinmux hardware peripherals is guaranteed
+    // within the platform process memory mapping in system.json5.
+    let mut gpio = unsafe { EarlGreyGpio::new() };
+    let platform_config = PlatformConfig::default();
+    platform_config.pinmux_config(&mut gpio);
+
     loop {
         sleep_until(SystemClock::now() + Duration::from_secs(600))
             .map_err(ErrorCode::kernel_error)?;

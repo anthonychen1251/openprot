@@ -170,6 +170,7 @@ rust_process(
     tags = ["kernel"],
     visibility = ["//visibility:public"],
     deps = [
+        "//target/earlgrey/firmware:platform_config",
         "//util/error",
         "//util/zfmt",
         "@pigweed//pw_kernel/userspace",

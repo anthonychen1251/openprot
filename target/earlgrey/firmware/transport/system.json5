@@ -176,6 +176,18 @@
             }
           ],
           memory_mappings: [
+            {
+              name: "gpio",
+              type: "device",
+              start_address: 0x40040000,
+              size_bytes: 0x40
+            },
+            {
+              name: "pinmux",
+              type: "device",
+              start_address: 0x40460000,
+              size_bytes: 0x1000
+            }
           ]
         },
         {
