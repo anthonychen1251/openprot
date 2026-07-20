@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use earlgrey_testutil::{get_dfu_transfer_size, print_uart, sequence_dfu_download, DfuClient};
 use opentitanlib::app::TransportWrapper;
+use opentitanlib::io::gpio::PinMode;
 use opentitanlib::test_utils::init::InitializeTest;
 use opentitanlib::uart::console::UartConsole;
 use usb::UsbOpts;
@@ -172,6 +173,12 @@ fn main() -> Result<()> {
     args.init.init_logging();
 
     let transport = args.init.init_target()?;
+
+    log::info!("Setting USB presence pin (IOR11) to Low...");
+    let usb_presence_pin = transport.gpio_pin("IOR11")?;
+    usb_presence_pin.set_mode(PinMode::PushPull)?;
+    usb_presence_pin.write(false)?;
+
     run_dfu_owner_transfer_test(
         &transport,
         &args.usb,
