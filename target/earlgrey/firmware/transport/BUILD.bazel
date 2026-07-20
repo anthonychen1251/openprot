@@ -145,6 +145,7 @@ rust_process(
     deps = [
         "//hal/blocking/flash",
         "//services/flash:client",
+        "//target/earlgrey/services/platform:client",
         "//target/earlgrey/services/sysmgr:client",
         "//target/earlgrey/util",
         "//target/earlgrey/util:fw_update",
@@ -171,7 +172,9 @@ rust_process(
     visibility = ["//visibility:public"],
     deps = [
         "//target/earlgrey/firmware:platform_config",
+        "//target/earlgrey/services/platform:server",
         "//util/error",
+        "//util/ipc",
         "//util/zfmt",
         "@pigweed//pw_kernel/userspace",
         "@pigweed//pw_status/rust:pw_status",

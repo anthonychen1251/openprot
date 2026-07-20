@@ -4,17 +4,16 @@
 #![no_std]
 #![no_main]
 
-use pw_status::Error;
-use userspace::time::{sleep_until, Clock, Duration, SystemClock};
-use userspace::{process_entry, syscall};
-use util_error::{AsStatus, ErrorCode};
-use util_zfmt::messages::{ProcessExit, ProcessStart};
-
+use earlgrey_platform_server::PlatformServer;
+use platform_codegen::handle;
 use platform_config::{EarlGreyGpio, PinmuxConfig, PlatformConfig};
-
-/*
- * TODO: implement platform server.
- */
+use pw_status::Error;
+use userspace::process_entry;
+use userspace::syscall::{self, Signals};
+use userspace::time::Instant;
+use util_error::{AsStatus, ErrorCode};
+use util_ipc::IpcHandle;
+use util_zfmt::messages::{ProcessExit, ProcessStart};
 
 fn platform_server() -> Result<(), ErrorCode> {
     // Safety: Exclusive access to GPIO and Pinmux hardware peripherals is guaranteed
@@ -23,9 +22,39 @@ fn platform_server() -> Result<(), ErrorCode> {
     let platform_config = PlatformConfig::default();
     platform_config.pinmux_config(&mut gpio);
 
+    let mut server = PlatformServer::new(gpio);
+
+    syscall::wait_group_add(
+        handle::PLATFORM_WAIT_GROUP,
+        handle::PLATFORM_UPDATER_SERVICE,
+        Signals::READABLE,
+        1,
+    )
+    .map_err(ErrorCode::kernel_error)?;
+
+    syscall::wait_group_add(
+        handle::PLATFORM_WAIT_GROUP,
+        handle::GPIO_INTERRUPTS,
+        Signals::READABLE,
+        2,
+    )
+    .map_err(ErrorCode::kernel_error)?;
+
+    let updater_channel = IpcHandle::new(handle::PLATFORM_UPDATER_SERVICE);
+    let mut buf = [0u8; 1024];
+
     loop {
-        sleep_until(SystemClock::now() + Duration::from_secs(600))
-            .map_err(ErrorCode::kernel_error)?;
+        let wait_result =
+            syscall::object_wait(handle::PLATFORM_WAIT_GROUP, Signals::READABLE, Instant::MAX)
+                .map_err(ErrorCode::kernel_error)?;
+
+        if wait_result.user_data == 1 {
+            server.handle_one(&updater_channel, &mut buf)?;
+        } else if wait_result.user_data == 2 {
+            if server.handle_gpio_interrupt()? {
+                server.respond_pending_usb_wait(&updater_channel)?;
+            }
+        }
     }
 }
 

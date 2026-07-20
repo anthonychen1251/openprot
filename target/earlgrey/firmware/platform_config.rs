@@ -158,3 +158,13 @@ impl PinmuxConfig for PlatformConfig {
         }
     }
 }
+
+/// Returns true if USB presence is detected (active Low on USB_PRESENCE_GPIO).
+pub fn check_usb_front_panel_presence(gpio: &EarlGreyGpio) -> bool {
+    if let Ok(input) = gpio.read_input() {
+        let mask: GpioMask = USB_PRESENCE_GPIO.into();
+        !input.contains(mask)
+    } else {
+        false
+    }
+}

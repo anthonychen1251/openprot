@@ -153,6 +153,12 @@
               handler_object_name: "eflash_updatemgr_service"
             },
             {
+              name: "platform_updater_client",
+              type: "channel_initiator",
+              handler_process: "platform",
+              handler_object_name: "platform_updater_service"
+            },
+            {
               name: "updatemgr_thread",
               kernel_stack_size_bytes: 4096,
               type: "thread"
@@ -168,6 +174,21 @@
               type: "channel_initiator",
               handler_process: "logmgr",
               handler_object_name: "logger_platform"
+            },
+            {
+              name: "platform_updater_service",
+              type: "channel_handler"
+            },
+            {
+              name: "platform_wait_group",
+              type: "wait_group"
+            },
+            {
+              name: "gpio_interrupts",
+              type: "interrupt",
+              irqs: [
+                { name: "gpio_pin_3", number: 40 }
+              ]
             },
             {
               name: "platform_thread",

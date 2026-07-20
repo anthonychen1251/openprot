@@ -1,0 +1,43 @@
+# Licensed under the Apache-2.0 license
+# SPDX-License-Identifier: Apache-2.0
+
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "client",
+    srcs = [
+        "client.rs",
+    ],
+    crate_name = "earlgrey_platform_client",
+    edition = "2024",
+    deps = [
+        "//util/error",
+        "//util/ipc",
+        "//util/types",
+        "@pigweed//pw_kernel/userspace",
+        "@rust_crates//:zerocopy",
+    ],
+)
+
+rust_library(
+    name = "server",
+    srcs = [
+        "server.rs",
+    ],
+    crate_name = "earlgrey_platform_server",
+    edition = "2024",
+    deps = [
+        ":client",
+        "//target/earlgrey/drivers:gpio",
+        "//target/earlgrey/firmware:platform_config",
+        "//util/error",
+        "//util/ipc",
+        "//util/types",
+        "//util/zfmt",
+        "@pigweed//pw_kernel/userspace",
+        "@rust_crates//:zerocopy",
+        "@zfmt//zfmt",
+    ],
+)

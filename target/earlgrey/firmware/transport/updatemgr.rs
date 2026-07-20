@@ -240,7 +240,17 @@ fn try_update(
     Ok(())
 }
 
+use earlgrey_platform_client::PlatformClient;
+
+#[derive(Zfmt)]
+#[zfmt(format = "USB front panel is not presented. Proceeding with update...")]
+struct UsbFrontPanelNotPresented {}
+
 fn updatemgr_process() -> Result<(), ErrorCode> {
+    let platform_client = PlatformClient::new(IpcHandle::new(handle::PLATFORM_UPDATER_CLIENT));
+    platform_client.wait_until_usb_disconnected()?;
+    util_zfmt::info!(UsbFrontPanelNotPresented {});
+
     let sysmgr_client =
         earlgrey_sysmgr_client::SysmgrClient::new(IpcHandle::new(handle::SYSMGR_UPDATER_CLIENT));
 
