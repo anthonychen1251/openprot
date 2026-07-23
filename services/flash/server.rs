@@ -244,3 +244,296 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashIpcServer<TFlash> {
         Ok((opcode, res.map(|_| ())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hal_flash::FlashAddress;
+    use util_types::PowerOf2Usize;
+
+    struct DummyFlash;
+
+    impl Flash for DummyFlash {
+        type Error = ErrorCode;
+
+        fn geometry(
+            &mut self,
+        ) -> Result<(core::num::NonZero<usize>, PowerOf2Usize, u32), Self::Error> {
+            Ok((
+                core::num::NonZero::new(0x1000).unwrap(),
+                PowerOf2Usize::new(256).unwrap(),
+                1,
+            ))
+        }
+
+        fn read(&mut self, _start_addr: FlashAddress, _buf: &mut [u8]) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn erase(
+            &mut self,
+            _start_addr: FlashAddress,
+            _size: PowerOf2Usize,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn program(&mut self, _start_addr: FlashAddress, _data: &[u8]) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_lock_try_lock_unlock_flow() {
+        let mut server = FlashIpcServer::new(DummyFlash);
+
+        assert!(!server.is_locked());
+        assert!(!server.is_locked_by(1));
+        assert!(!server.is_locked_by(2));
+
+        // Token 1 acquires try_lock
+        let res = server.handle_op(1, IPC_OP_FLASH_TRY_LOCK, &mut [], 0);
+        assert!(res.is_ok());
+        assert!(server.is_locked());
+        assert!(server.is_locked_by(1));
+
+        // Token 2 try_lock is denied with FLASH_GENERIC_LOCKED
+        let res = server.handle_op(2, IPC_OP_FLASH_TRY_LOCK, &mut [], 0);
+        assert_eq!(res, Err(error::FLASH_GENERIC_LOCKED));
+
+        // Token 2 blocking lock is denied with FLASH_GENERIC_LOCKED (deferred in FlashService)
+        let res = server.handle_op(2, IPC_OP_FLASH_LOCK, &mut [], 0);
+        assert_eq!(res, Err(error::FLASH_GENERIC_LOCKED));
+
+        // Token 2 read operation is denied with FLASH_GENERIC_LOCKED while locked by Token 1
+        let mut read_buf = [0u8; 16];
+        let res = server.handle_op(2, IPC_OP_FLASH_READ, &mut read_buf, 0);
+        assert_eq!(res, Err(error::FLASH_GENERIC_LOCKED));
+
+        // Token 2 unlock attempt while Token 1 holds lock is denied with FLASH_GENERIC_LOCKED
+        let res = server.handle_op(2, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert_eq!(res, Err(error::FLASH_GENERIC_LOCKED));
+
+        // Token 1 unlock succeeds
+        let res = server.handle_op(1, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert!(res.is_ok());
+        assert!(!server.is_locked());
+
+        // Token 2 unlock attempt when unlocked is denied with FLASH_GENERIC_NOT_LOCKED
+        let res = server.handle_op(2, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert_eq!(res, Err(error::FLASH_GENERIC_NOT_LOCKED));
+
+        // Token 2 can now acquire lock
+        let res = server.handle_op(2, IPC_OP_FLASH_TRY_LOCK, &mut [], 0);
+        assert!(res.is_ok());
+        assert!(server.is_locked());
+        assert!(server.is_locked_by(2));
+
+        // Token 2 releases lock
+        let res = server.handle_op(2, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert!(res.is_ok());
+        assert!(!server.is_locked());
+    }
+
+    #[test]
+    fn test_force_lock() {
+        let mut server = FlashIpcServer::new(DummyFlash);
+
+        server.force_lock(3);
+        assert!(server.is_locked());
+        assert!(server.is_locked_by(3));
+
+        let res = server.handle_op(3, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert!(res.is_ok());
+        assert!(!server.is_locked());
+    }
+
+    #[test]
+    fn test_process_a_holds_lock_process_b_contention_and_handover() {
+        let mut service = TestFlashService::new(DummyFlash);
+
+        // 1. Process A (Token 1) acquires lock
+        let (res, wake) = service.dispatch(1, IPC_OP_FLASH_LOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+        assert_eq!(wake, None);
+        assert!(service.server.is_locked_by(1));
+
+        // 2. Process B (Token 2) attempts non-blocking try_lock() while Process A holds lock
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_TRY_LOCK, &mut [], 0);
+        assert_eq!(
+            res,
+            DispatchResult::Responded(Err(error::FLASH_GENERIC_LOCKED))
+        );
+        assert_eq!(wake, None);
+        assert!(service.server.is_locked_by(1));
+
+        // 3. Process B (Token 2) attempts blocking lock() while Process A holds lock
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_LOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::DeferredWaiting);
+        assert_eq!(wake, None);
+        assert_eq!(service.pending_lock, Some(2));
+        assert!(service.server.is_locked_by(1));
+
+        // 4. Process B attempts operation while Process A holds lock
+        let mut buf = [0u8; 16];
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_GET_INFO, &mut buf, 0);
+        assert_eq!(
+            res,
+            DispatchResult::Responded(Err(error::FLASH_GENERIC_LOCKED))
+        );
+        assert_eq!(wake, None);
+
+        // 5. Process A (Token 1) unlocks -> Service automatically hands over lock to Process B (Token 2)!
+        let (res, wake) = service.dispatch(1, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+        assert_eq!(wake, Some((2, Ok(()))));
+        assert_eq!(service.pending_lock, None);
+        assert!(service.server.is_locked_by(2));
+
+        // 6. Process B performs operation while holding lock
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_GET_INFO, &mut buf, 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+        assert_eq!(wake, None);
+
+        // 7. Process A attempts try_lock while Process B holds lock -> Denied
+        let (res, wake) = service.dispatch(1, IPC_OP_FLASH_TRY_LOCK, &mut [], 0);
+        assert_eq!(
+            res,
+            DispatchResult::Responded(Err(error::FLASH_GENERIC_LOCKED))
+        );
+        assert_eq!(wake, None);
+
+        // 8. Process B unlocks -> Lock released
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+        assert_eq!(wake, None);
+        assert!(!service.server.is_locked());
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum DispatchResult {
+        Responded(Result<(), ErrorCode>),
+        DeferredWaiting,
+    }
+
+    struct TestFlashService<TFlash: Flash<Error = ErrorCode>> {
+        server: FlashIpcServer<TFlash>,
+        pending_lock: Option<usize>,
+    }
+
+    impl<TFlash: Flash<Error = ErrorCode>> TestFlashService<TFlash> {
+        fn new(flash: TFlash) -> Self {
+            Self {
+                server: FlashIpcServer::new(flash),
+                pending_lock: None,
+            }
+        }
+
+        fn dispatch(
+            &mut self,
+            token: usize,
+            opcode: Opcode,
+            buf: &mut [u8],
+            reqsz: usize,
+        ) -> (DispatchResult, Option<(usize, Result<(), ErrorCode>)>) {
+            let res = self.server.handle_op(token, opcode, buf, reqsz);
+            if opcode == IPC_OP_FLASH_LOCK && res == Err(error::FLASH_GENERIC_LOCKED) {
+                if self.pending_lock.is_some() {
+                    return (
+                        DispatchResult::Responded(Err(error::FLASH_GENERIC_LOCKED)),
+                        None,
+                    );
+                }
+                self.pending_lock = Some(token);
+                return (DispatchResult::DeferredWaiting, None);
+            }
+
+            let mut wake_waiter = None;
+            if opcode == IPC_OP_FLASH_UNLOCK && !self.server.is_locked() {
+                if let Some(waiter_token) = self.pending_lock.take() {
+                    self.server.force_lock(waiter_token);
+                    wake_waiter = Some((waiter_token, Ok(())));
+                }
+            }
+
+            (DispatchResult::Responded(res.map(|_| ())), wake_waiter)
+        }
+    }
+
+    #[test]
+    fn test_client_service_server_full_flow() {
+        let mut service = TestFlashService::new(DummyFlash);
+
+        // Step 1: Client A (Token 1) calls lock() -> Service responds Ok(()), Client A holds lock
+        let (res, wake) = service.dispatch(1, IPC_OP_FLASH_LOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+        assert_eq!(wake, None);
+        assert!(service.server.is_locked_by(1));
+
+        // Step 2: Client B (Token 2) calls try_lock() -> Service responds Err(FLASH_GENERIC_LOCKED) immediately
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_TRY_LOCK, &mut [], 0);
+        assert_eq!(
+            res,
+            DispatchResult::Responded(Err(error::FLASH_GENERIC_LOCKED))
+        );
+        assert_eq!(wake, None);
+        assert!(service.server.is_locked_by(1));
+
+        // Step 3: Client B (Token 2) calls lock() -> Service defers response, Client B is BLOCKED waiting
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_LOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::DeferredWaiting);
+        assert_eq!(wake, None);
+        assert_eq!(service.pending_lock, Some(2));
+        assert!(service.server.is_locked_by(1));
+
+        // Step 4: Client B attempts operation while blocked -> Service rejects with FLASH_GENERIC_LOCKED
+        let mut buf = [0u8; 16];
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_GET_INFO, &mut buf, 0);
+        assert_eq!(
+            res,
+            DispatchResult::Responded(Err(error::FLASH_GENERIC_LOCKED))
+        );
+        assert_eq!(wake, None);
+
+        // Step 5: Client A (Token 1) calls unlock() -> Service responds Ok(()) to Client A, AND automatically wakes up Client B with Ok(())!
+        let (res, wake) = service.dispatch(1, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+        assert_eq!(wake, Some((2, Ok(())))); // Client B (Token 2) unblocked with Ok(())
+        assert_eq!(service.pending_lock, None);
+        assert!(service.server.is_locked_by(2)); // Ownership transferred to Client B!
+
+        // Step 6: Client B (Token 2) performs operation now that it holds the lock -> Succeeds
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_GET_INFO, &mut buf, 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+        assert_eq!(wake, None);
+
+        // Step 7: Client B (Token 2) calls unlock() -> Lock released
+        let (res, wake) = service.dispatch(2, IPC_OP_FLASH_UNLOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+        assert_eq!(wake, None);
+        assert!(!service.server.is_locked());
+    }
+
+    #[test]
+    fn test_second_waiter_rejected_when_pending_slot_occupied() {
+        let mut service = TestFlashService::new(DummyFlash);
+
+        // Client A (Token 1) locks
+        let (res, _) = service.dispatch(1, IPC_OP_FLASH_LOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::Responded(Ok(())));
+
+        // Client B (Token 2) calls lock() -> Pending slot occupied by Token 2
+        let (res, _) = service.dispatch(2, IPC_OP_FLASH_LOCK, &mut [], 0);
+        assert_eq!(res, DispatchResult::DeferredWaiting);
+        assert_eq!(service.pending_lock, Some(2));
+
+        // Client C (Token 3) calls lock() -> Pending slot already occupied -> Denied immediately with FLASH_GENERIC_LOCKED
+        let (res, _) = service.dispatch(3, IPC_OP_FLASH_LOCK, &mut [], 0);
+        assert_eq!(
+            res,
+            DispatchResult::Responded(Err(error::FLASH_GENERIC_LOCKED))
+        );
+        // Verify Token 2 remains the pending waiter without being overwritten
+        assert_eq!(service.pending_lock, Some(2));
+    }
+}

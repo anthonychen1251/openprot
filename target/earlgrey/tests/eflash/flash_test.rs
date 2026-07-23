@@ -92,6 +92,28 @@ fn erase_program_test(flash: &mut FlashIpcClient, addr: FlashAddress) -> Result<
     Ok(())
 }
 
+fn lock_test(flash: &mut FlashIpcClient) -> Result<(), ErrorCode> {
+    pw_log::info!("Testing lock_ipc and unlock_ipc...");
+    flash.lock_ipc()?;
+    pw_log::info!("Acquired lock via lock_ipc, now unlocking...");
+    flash.unlock_ipc()?;
+
+    pw_log::info!("Testing try_lock and RAII guard...");
+    {
+        let _guard = flash.try_lock()?;
+        pw_log::info!("Acquired try_lock RAII guard, releasing on scope exit...");
+    }
+    pw_log::info!("RAII guard dropped, lock released successfully");
+
+    pw_log::info!("Testing lock and RAII guard...");
+    {
+        let _guard = flash.lock()?;
+        pw_log::info!("Acquired lock RAII guard, releasing on scope exit...");
+    }
+    pw_log::info!("RAII guard dropped, lock released successfully");
+    Ok(())
+}
+
 fn flash_test() -> Result<(), ErrorCode> {
     let mut flash = FlashIpcClient::new(IpcHandle::new(handle::FLASH_SERVICE))?;
 
@@ -101,6 +123,8 @@ fn flash_test() -> Result<(), ErrorCode> {
 
     get_manifest(&mut flash)?;
     //get_certificates(&mut flash)?;
+
+    lock_test(&mut flash)?;
 
     // We're currently executing in SlotA, so we should be able to access SlotB.
     erase_program_test(&mut flash, FlashAddress::data(0x90000))?;
