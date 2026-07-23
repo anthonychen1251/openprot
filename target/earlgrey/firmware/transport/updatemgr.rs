@@ -98,7 +98,7 @@ struct OwnerBlockUpdateNotAllowed {
 
 /// Helper function to erase and write a firmware partition page-by-page.
 fn flash_write_partition(
-    flash_client: &mut FlashIpcClient,
+    flash_client: &mut impl Flash<Error = ErrorCode>,
     spi_flash: &mut impl RandomRead<Error = ErrorCode>,
     src_offset: usize,
     dest_offset: u32,
@@ -133,7 +133,7 @@ fn flash_write_partition(
 }
 
 fn flash_owner_block(
-    flash_client: &mut FlashIpcClient,
+    flash_client: &mut impl Flash<Error = ErrorCode>,
     spi_flash: &mut impl RandomRead<Error = ErrorCode>,
     src_offset: usize,
 ) -> Result<(), ErrorCode> {
@@ -168,7 +168,10 @@ fn try_update(
     spi_flash_client: &mut FlashIpcClient,
     update: &earlgrey_fw_update::FwUpdate,
 ) -> Result<(), ErrorCode> {
-    let mut reader = spi_flash_client.random_reader();
+    let mut locked_spi_flash = spi_flash_client.lock()?;
+    let mut locked_flash = flash_client.lock()?;
+
+    let mut reader = locked_spi_flash.random_reader();
     let size = reader.size()?;
     util_zfmt::info!(SpiFlashDetected { size: size as u32 });
 
@@ -189,7 +192,7 @@ fn try_update(
         len: bundle.rom_ext_len as u32,
     });
     flash_write_partition(
-        flash_client,
+        &mut locked_flash,
         &mut reader,
         bundle.offset,
         update.rom_ext_start,
@@ -210,7 +213,7 @@ fn try_update(
         len: bundle.owner_len as u32,
     });
     flash_write_partition(
-        flash_client,
+        &mut locked_flash,
         &mut reader,
         bundle.offset + update.rom_ext_size,
         update.app_start,
@@ -230,7 +233,7 @@ fn try_update(
             offset: offset as u32
         });
 
-        if let Err(e) = flash_owner_block(flash_client, &mut reader, offset) {
+        if let Err(e) = flash_owner_block(&mut locked_flash, &mut reader, offset) {
             util_zfmt::error!(FlashingOwnerBlockFailed { status: e.0.get() });
         }
     } else {

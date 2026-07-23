@@ -127,7 +127,11 @@ pub const DFU_ALT_SPI_EEPROM0: u8 = 5;
 /// # Returns
 ///
 /// The size of the certificate in bytes, or a DFU error status.
-fn get_certificate(flash: &mut FlashIpcClient, n: u8, data: &mut [u8]) -> Result<usize, DfuStatus> {
+fn get_certificate(
+    flash: &mut impl Flash<Error = ErrorCode>,
+    n: u8,
+    data: &mut [u8],
+) -> Result<usize, DfuStatus> {
     util_zfmt::debug!("Reading certificate {n}");
     let (partition, mut n) = match n {
         0 => (0, 0), // The UDS (dice) cert is located in bank=0, page=9.
@@ -278,19 +282,26 @@ impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
     /// Erases the flash partition from `start` to `end` address (exclusive).
     ///
     /// The erase is performed page-by-page.
-    fn flash_erase(&mut self, mut start: u32, end: u32) -> Result<(), ErrorCode> {
-        let (_, page_size, _) = self.flash.geometry()?;
+    fn flash_erase(
+        flash: &mut impl Flash<Error = ErrorCode>,
+        mut start: u32,
+        end: u32,
+    ) -> Result<(), ErrorCode> {
+        let (_, page_size, _) = flash.geometry()?;
         while start < end {
-            self.flash.erase(FlashAddress::data(start), page_size)?;
+            flash.erase(FlashAddress::data(start), page_size)?;
             start += page_size.get() as u32;
         }
         Ok(())
     }
 
     /// Erases a single flash page (data or info).
-    fn flash_erase_page(&mut self, addr: FlashAddress) -> Result<(), ErrorCode> {
-        let (_, page_size, _) = self.flash.geometry()?;
-        self.flash.erase(addr, page_size)
+    fn flash_erase_page(
+        flash: &mut impl Flash<Error = ErrorCode>,
+        addr: FlashAddress,
+    ) -> Result<(), ErrorCode> {
+        let (_, page_size, _) = flash.geometry()?;
+        flash.erase(addr, page_size)
     }
 
     /// Handles writing a block of firmware to flash.
@@ -300,8 +311,13 @@ impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
     /// 2. Erasing the target partition upon receiving the first block.
     /// 3. Programming subsequent blocks into the target partition.
     /// 4. Transitioning the state to `Done` when a short block (less than 2048 bytes) is received.
-    fn flash_fw_block(&mut self, block_num: u32, data: &[u8]) -> Result<(), DfuStatus> {
-        if block_num == self.update.next_erase {
+    fn flash_fw_block(
+        update: &mut FwUpdate,
+        flash: &mut impl Flash<Error = ErrorCode>,
+        block_num: u32,
+        data: &[u8],
+    ) -> Result<(), DfuStatus> {
+        if block_num == update.next_erase {
             // Sized appropriately by transfer_size Functional Descriptor (2048 bytes).
             // Use read_from_prefix to safely parse unaligned DFU buffer into naturally aligned stack variable.
             let (manifest, _) =
@@ -316,29 +332,28 @@ impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
                 ManifestIdentifier::ROM_EXT => {
                     util_zfmt::info!(FlashingRegion {
                         region: "ROM_EXT",
-                        start: self.update.rom_ext_start,
-                        end: self.update.rom_ext_end,
+                        start: update.rom_ext_start,
+                        end: update.rom_ext_end,
                     });
-                    self.flash_erase(self.update.rom_ext_start, self.update.rom_ext_end)
+                    Self::flash_erase(flash, update.rom_ext_start, update.rom_ext_end)
                         .map_err(|_| DfuStatus::ErrErase)?;
-                    self.update.state = FwUpdateState::RomExt;
-                    self.update.next_erase =
-                        (self.update.rom_ext_end - self.update.rom_ext_start) / 2048;
-                    self.update.start_block = block_num;
-                    self.update.is_valid_app = false;
-                    self.update.owner_transfer_offset = None;
+                    update.state = FwUpdateState::RomExt;
+                    update.next_erase = (update.rom_ext_end - update.rom_ext_start) / 2048;
+                    update.start_block = block_num;
+                    update.is_valid_app = false;
+                    update.owner_transfer_offset = None;
                 }
                 ManifestIdentifier::APPLICATION => {
                     util_zfmt::info!(FlashingRegion {
                         region: "Application",
-                        start: self.update.app_start,
-                        end: self.update.app_end,
+                        start: update.app_start,
+                        end: update.app_end,
                     });
-                    self.flash_erase(self.update.app_start, self.update.app_end)
+                    Self::flash_erase(flash, update.app_start, update.app_end)
                         .map_err(|_| DfuStatus::ErrErase)?;
-                    self.update.state = FwUpdateState::Application;
-                    self.update.start_block = block_num;
-                    self.update.is_valid_app = true;
+                    update.state = FwUpdateState::Application;
+                    update.start_block = block_num;
+                    update.is_valid_app = true;
 
                     // Scan extension table for Owner Transfer Blob
                     let mut owner_transfer_offset = None;
@@ -363,7 +378,7 @@ impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
                             break;
                         }
                     }
-                    self.update.owner_transfer_offset = owner_transfer_offset;
+                    update.owner_transfer_offset = owner_transfer_offset;
                 }
                 _ => {
                     util_zfmt::error!(UnknownManifestId {
@@ -374,23 +389,23 @@ impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
             }
         }
 
-        let block = block_num - self.update.start_block;
-        match self.update.state {
+        let block = block_num - update.start_block;
+        match update.state {
             FwUpdateState::RomExt => {
-                let address = self.update.rom_ext_start + block * 2048;
-                if address + data.len() as u32 > self.update.rom_ext_end {
+                let address = update.rom_ext_start + block * 2048;
+                if address + data.len() as u32 > update.rom_ext_end {
                     return Err(DfuStatus::ErrAddress);
                 }
-                self.flash
+                flash
                     .program(FlashAddress::data(address), data)
                     .map_err(|_| DfuStatus::ErrProg)?;
             }
             FwUpdateState::Application => {
-                let address = self.update.app_start + block * 2048;
-                if address + data.len() as u32 > self.update.app_end {
+                let address = update.app_start + block * 2048;
+                if address + data.len() as u32 > update.app_end {
                     return Err(DfuStatus::ErrAddress);
                 }
-                self.flash
+                flash
                     .program(FlashAddress::data(address), data)
                     .map_err(|_| DfuStatus::ErrProg)?;
             }
@@ -400,7 +415,7 @@ impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
         }
 
         if data.len() < 2048 {
-            self.update.state = FwUpdateState::Done;
+            update.state = FwUpdateState::Done;
         }
         Ok(())
     }
@@ -437,56 +452,9 @@ impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
         Ok(data.len())
     }
 }
-impl<IPC: IpcChannel> DfuHandler for EarlgreyDfuHandler<IPC> {
-    /// Handles a DFU download (DNLOAD) request.
-    ///
-    /// Accepts firmware blocks on Alt setting 0.
-    fn dnload(&mut self, alt: u8, block_num: u16, data: &[u8]) -> Result<(), DfuStatus> {
-        util_zfmt::info!(DfuTransfer {
-            dir: "DNLOAD",
-            alt,
-            block: block_num,
-            len: data.len() as u32,
-        });
-        self.alt_setting = Some(alt);
-        if alt == DFU_ALT_FIRMWARE {
-            self.flash_fw_block(block_num as u32, data)
-        } else if alt == DFU_ALT_SPI_EEPROM0 {
-            self.flash_spi_eeprom0_block(block_num as u32, data)
-        } else {
-            Err(DfuStatus::ErrFile)
-        }
-    }
-
-    /// Handles a DFU upload (UPLOAD) request.
-    ///
-    /// Returns device certificates on Alt settings 1, 2, and 3.
-    fn upload(&mut self, alt: u8, block_num: u16, data: &mut [u8]) -> Result<usize, DfuStatus> {
-        util_zfmt::info!(DfuTransfer {
-            dir: "UPLOAD",
-            alt,
-            block: block_num,
-            len: data.len() as u32,
-        });
-        self.alt_setting = Some(alt);
-        match alt {
-            DFU_ALT_UDS_CERT | DFU_ALT_CDI0_CERT | DFU_ALT_CDI1_CERT => {
-                get_certificate(&mut self.flash, alt - DFU_ALT_UDS_CERT, data)
-            }
-            DFU_ALT_SPI_EEPROM0 => self.read_spi_eeprom0_block(block_num as u32, data),
-            _ => Err(DfuStatus::ErrFile),
-        }
-    }
-
-    /// Handles DFU manifestation.
-    ///
-    /// If the firmware update succeeded, updates the boot policy to prefer the new
-    /// slot and requests a reboot.
-    fn manifest(&mut self) -> Result<(), DfuStatus> {
-        util_zfmt::info!(DfuManifest);
-        if self.alt_setting == Some(DFU_ALT_SPI_EEPROM0) {
-            return Ok(());
-        }
+impl<IPC: IpcChannel> EarlgreyDfuHandler<IPC> {
+    /// Internal implementation of DFU manifestation logic.
+    fn manifest_inner(&mut self) -> Result<(), DfuStatus> {
         if self.update.state == FwUpdateState::Done
             || self.update.state == FwUpdateState::Application
             || self.update.state == FwUpdateState::RomExt
@@ -525,7 +493,7 @@ impl<IPC: IpcChannel> DfuHandler for EarlgreyDfuHandler<IPC> {
                     // 2. Erase OWNER_PAGE_1 (Bank 1, Page 3)
                     // Permissions were pre-configured by ROM_EXT per user request guidelines.
                     let owner_page_1 = FlashAddress::info(1, 3, 0);
-                    self.flash_erase_page(owner_page_1).map_err(|e| {
+                    Self::flash_erase_page(&mut self.flash, owner_page_1).map_err(|e| {
                         util_zfmt::error!(ReprogramOwnerPage1Failed {
                             code: u32::from(e) as u32
                         });
@@ -564,11 +532,123 @@ impl<IPC: IpcChannel> DfuHandler for EarlgreyDfuHandler<IPC> {
                 });
             let _ = self.sysmgr.request_reboot();
         }
+
         Ok(())
+    }
+}
+
+impl<IPC: IpcChannel> DfuHandler for EarlgreyDfuHandler<IPC> {
+    /// Handles a DFU download (DNLOAD) request.
+    ///
+    /// Accepts firmware blocks on Alt setting 0.
+    fn dnload(&mut self, alt: u8, block_num: u16, data: &[u8]) -> Result<(), DfuStatus> {
+        util_zfmt::info!(DfuTransfer {
+            dir: "DNLOAD",
+            alt,
+            block: block_num,
+            len: data.len() as u32,
+        });
+        self.alt_setting = Some(alt);
+
+        // Lock flash on block 0 (start of DFU download transfer)
+        if block_num == 0 {
+            if alt == DFU_ALT_FIRMWARE {
+                let _ = self.flash.lock_ipc();
+            } else if alt == DFU_ALT_SPI_EEPROM0 {
+                let _ = self.spi_flash.lock_ipc();
+            }
+        }
+
+        if alt == DFU_ALT_FIRMWARE {
+            Self::flash_fw_block(&mut self.update, &mut self.flash, block_num as u32, data)
+        } else if alt == DFU_ALT_SPI_EEPROM0 {
+            self.flash_spi_eeprom0_block(block_num as u32, data)
+        } else {
+            Err(DfuStatus::ErrFile)
+        }
+    }
+
+    /// Handles a DFU upload (UPLOAD) request.
+    ///
+    /// Returns device certificates on Alt settings 1, 2, and 3.
+    fn upload(&mut self, alt: u8, block_num: u16, data: &mut [u8]) -> Result<usize, DfuStatus> {
+        util_zfmt::info!(DfuTransfer {
+            dir: "UPLOAD",
+            alt,
+            block: block_num,
+            len: data.len() as u32,
+        });
+        self.alt_setting = Some(alt);
+
+        // Lock flash on block 0 (start of DFU upload transfer)
+        if block_num == 0 {
+            match alt {
+                DFU_ALT_UDS_CERT | DFU_ALT_CDI0_CERT | DFU_ALT_CDI1_CERT => {
+                    let _ = self.flash.lock_ipc();
+                }
+                DFU_ALT_SPI_EEPROM0 => {
+                    let _ = self.spi_flash.lock_ipc();
+                }
+                _ => {}
+            }
+        }
+
+        let res = match alt {
+            DFU_ALT_UDS_CERT | DFU_ALT_CDI0_CERT | DFU_ALT_CDI1_CERT => {
+                get_certificate(&mut self.flash, alt - DFU_ALT_UDS_CERT, data)
+            }
+            DFU_ALT_SPI_EEPROM0 => self.read_spi_eeprom0_block(block_num as u32, data),
+            _ => Err(DfuStatus::ErrFile),
+        };
+
+        // If upload finishes (read < 2048 bytes) or errors out, release lock
+        if res.is_err() || matches!(res, Ok(len) if len < 2048) {
+            if let Some(active_alt) = self.alt_setting.take() {
+                match active_alt {
+                    DFU_ALT_UDS_CERT | DFU_ALT_CDI0_CERT | DFU_ALT_CDI1_CERT => {
+                        let _ = self.flash.unlock_ipc();
+                    }
+                    DFU_ALT_SPI_EEPROM0 => {
+                        let _ = self.spi_flash.unlock_ipc();
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        res
+    }
+
+    /// Handles DFU manifestation.
+    ///
+    /// If the firmware update succeeded, updates the boot policy to prefer the new
+    /// slot and requests a reboot.
+    fn manifest(&mut self) -> Result<(), DfuStatus> {
+        util_zfmt::info!(DfuManifest);
+        let alt = self.alt_setting.take();
+        if alt == Some(DFU_ALT_SPI_EEPROM0) {
+            let _ = self.spi_flash.unlock_ipc();
+            return Ok(());
+        }
+
+        let res = self.manifest_inner();
+        let _ = self.flash.unlock_ipc();
+        res
     }
 
     /// Handles DFU abort.
     fn abort(&mut self) {
         util_zfmt::info!(DfuAbort);
+        if let Some(alt) = self.alt_setting.take() {
+            match alt {
+                DFU_ALT_FIRMWARE | DFU_ALT_UDS_CERT | DFU_ALT_CDI0_CERT | DFU_ALT_CDI1_CERT => {
+                    let _ = self.flash.unlock_ipc();
+                }
+                DFU_ALT_SPI_EEPROM0 => {
+                    let _ = self.spi_flash.unlock_ipc();
+                }
+                _ => {}
+            }
+        }
     }
 }
