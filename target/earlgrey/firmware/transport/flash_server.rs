@@ -14,7 +14,7 @@ use zfmt::Zfmt;
 
 use earlgrey_util::EarlgreyFlashAddress;
 use eflash_driver::{EmbeddedFlash, Permission};
-use hal_flash::{BlockingFlash, FlashAddress};
+use hal_flash::{BlockingFlash, Flash, FlashAddress};
 use services_flash_server::FlashIpcServer;
 use spi_flash::SpiFlash;
 use spi_host::SpiHost0;
@@ -52,6 +52,77 @@ impl Blocking for FlashCtrlInterrupt {
     }
 }
 
+use services_flash_opcode::{IPC_OP_FLASH_LOCK, IPC_OP_FLASH_UNLOCK};
+use util_ipc::IpcChannel;
+use zerocopy::IntoBytes;
+
+#[derive(Zfmt)]
+struct FlashChannel {
+    handle: u32,
+    token: usize,
+    ipc: IpcHandle,
+}
+
+struct PendingWaiter {
+    token: usize,
+    handle: u32,
+    ipc: IpcHandle,
+}
+
+struct FlashService<TFlash: Flash<Error = ErrorCode>> {
+    server: FlashIpcServer<TFlash>,
+    channels: &'static [FlashChannel],
+    pending_lock: Option<PendingWaiter>,
+}
+
+impl<TFlash: Flash<Error = ErrorCode>> FlashService<TFlash> {
+    fn dispatch(&mut self, current_token: usize, buf: &mut [u8]) -> Result<(), ErrorCode> {
+        let current_channel = self
+            .channels
+            .iter()
+            .find(|ch| ch.token == current_token)
+            .ok_or(KERNEL_ERROR_INTERNAL)?;
+
+        let (opcode, res) =
+            self.server
+                .handle_one_with_token(current_token, &current_channel.ipc, buf)?;
+
+        if opcode == IPC_OP_FLASH_LOCK && res.is_err() {
+            if self.pending_lock.is_some() {
+                let status = util_error::FLASH_GENERIC_LOCKED.0.get();
+                let _ = current_channel.ipc.respond(&[status.as_bytes(), &[]]);
+                return Ok(());
+            }
+
+            // Failed blocking lock attempt from non-owner client:
+            // Remove channel from WAIT_GROUP and save as pending lock waiter (response was deferred)
+            let _ = syscall::wait_group_remove(handle::FLASH_WAIT_GROUP, current_channel.handle);
+            self.pending_lock = Some(PendingWaiter {
+                token: current_token,
+                handle: current_channel.handle,
+                ipc: current_channel.ipc,
+            });
+            return Ok(());
+        }
+
+        if opcode == IPC_OP_FLASH_UNLOCK && !self.server.is_locked() {
+            if let Some(waiter) = self.pending_lock.take() {
+                self.server.force_lock(waiter.token);
+                let status = 0u32;
+                let _ = waiter.ipc.respond(&[status.as_bytes(), &[]]);
+                let _ = syscall::wait_group_add(
+                    handle::FLASH_WAIT_GROUP,
+                    waiter.handle,
+                    syscall::Signals::READABLE,
+                    waiter.token,
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
 fn flash_server() -> Result<(), ErrorCode> {
     let mut eflash_driver =
         EmbeddedFlash::new_with_interrupts(unsafe { flash_ctrl_core::FlashCtrl::new() });
@@ -64,7 +135,25 @@ fn flash_server() -> Result<(), ErrorCode> {
         driver: eflash_driver,
         blocking: FlashCtrlInterrupt,
     };
-    let mut eflash_server = FlashIpcServer::new(eflash);
+
+    static EFLASH_CHANNELS: &[FlashChannel] = &[
+        FlashChannel {
+            handle: handle::EFLASH_UPDATEMGR_SERVICE,
+            token: 1,
+            ipc: IpcHandle::new(handle::EFLASH_UPDATEMGR_SERVICE),
+        },
+        FlashChannel {
+            handle: handle::EFLASH_USB_SERVICE,
+            token: 2,
+            ipc: IpcHandle::new(handle::EFLASH_USB_SERVICE),
+        },
+    ];
+
+    let mut eflash_service = FlashService {
+        server: FlashIpcServer::new(eflash),
+        channels: EFLASH_CHANNELS,
+        pending_lock: None,
+    };
 
     let mmio0 = unsafe { spi_host::RegisterBlock::new(SpiHost0::PTR) };
     let mut spi_host = unsafe { earlgrey_spi_host::SpiHost::new(mmio0) };
@@ -79,51 +168,42 @@ fn flash_server() -> Result<(), ErrorCode> {
         util_zfmt::error!(SpiHostInitFailed { code: err_num });
         return Err(KERNEL_ERROR_INTERNAL);
     }
-
     let mut spi_flash = SpiFlash::new(spi_host);
     if let Err(e) = spi_flash.init() {
         util_zfmt::error!(SpiFlashInitFailed { code: u32::from(e) });
         return Err(e);
     }
-    let mut spi_flash_server = FlashIpcServer::new(spi_flash);
 
-    syscall::wait_group_add(
-        handle::FLASH_WAIT_GROUP,
-        handle::EFLASH_UPDATEMGR_SERVICE,
-        syscall::Signals::READABLE,
-        1, // token 1 = EFlash updatemgr
-    )
-    .map_err(ErrorCode::kernel_error)?;
+    static SPI_FLASH_CHANNELS: &[FlashChannel] = &[
+        FlashChannel {
+            handle: handle::SPI_FLASH_UPDATEMGR_SERVICE,
+            token: 3,
+            ipc: IpcHandle::new(handle::SPI_FLASH_UPDATEMGR_SERVICE),
+        },
+        FlashChannel {
+            handle: handle::SPI_FLASH_USB_SERVICE,
+            token: 4,
+            ipc: IpcHandle::new(handle::SPI_FLASH_USB_SERVICE),
+        },
+    ];
 
-    syscall::wait_group_add(
-        handle::FLASH_WAIT_GROUP,
-        handle::EFLASH_USB_SERVICE,
-        syscall::Signals::READABLE,
-        2, // token 2 = EFlash usb
-    )
-    .map_err(ErrorCode::kernel_error)?;
+    let mut spi_flash_service = FlashService {
+        server: FlashIpcServer::new(spi_flash),
+        channels: SPI_FLASH_CHANNELS,
+        pending_lock: None,
+    };
 
-    syscall::wait_group_add(
-        handle::FLASH_WAIT_GROUP,
-        handle::SPI_FLASH_UPDATEMGR_SERVICE,
-        syscall::Signals::READABLE,
-        3, // token 3 = SPI Flash updatemgr
-    )
-    .map_err(ErrorCode::kernel_error)?;
-
-    syscall::wait_group_add(
-        handle::FLASH_WAIT_GROUP,
-        handle::SPI_FLASH_USB_SERVICE,
-        syscall::Signals::READABLE,
-        4, // token 4 = SPI Flash usb
-    )
-    .map_err(ErrorCode::kernel_error)?;
+    for ch in EFLASH_CHANNELS.iter().chain(SPI_FLASH_CHANNELS.iter()) {
+        syscall::wait_group_add(
+            handle::FLASH_WAIT_GROUP,
+            ch.handle,
+            syscall::Signals::READABLE,
+            ch.token,
+        )
+        .map_err(ErrorCode::kernel_error)?;
+    }
 
     let mut buf = [0u8; 2064];
-    let eflash_updatemgr_ipc = IpcHandle::new(handle::EFLASH_UPDATEMGR_SERVICE);
-    let eflash_usb_ipc = IpcHandle::new(handle::EFLASH_USB_SERVICE);
-    let spi_flash_updatemgr_ipc = IpcHandle::new(handle::SPI_FLASH_UPDATEMGR_SERVICE);
-    let spi_flash_usb_ipc = IpcHandle::new(handle::SPI_FLASH_USB_SERVICE);
 
     loop {
         let wait_result = syscall::object_wait(
@@ -134,14 +214,10 @@ fn flash_server() -> Result<(), ErrorCode> {
         .map_err(ErrorCode::kernel_error)?;
 
         let token = wait_result.user_data;
-        if token == 1 {
-            eflash_server.handle_one(&eflash_updatemgr_ipc, &mut buf)?;
-        } else if token == 2 {
-            eflash_server.handle_one(&eflash_usb_ipc, &mut buf)?;
-        } else if token == 3 {
-            spi_flash_server.handle_one(&spi_flash_updatemgr_ipc, &mut buf)?;
-        } else if token == 4 {
-            spi_flash_server.handle_one(&spi_flash_usb_ipc, &mut buf)?;
+        match token {
+            1 | 2 => eflash_service.dispatch(token, &mut buf)?,
+            3 | 4 => spi_flash_service.dispatch(token, &mut buf)?,
+            _ => {}
         }
     }
 }

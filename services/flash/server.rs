@@ -12,18 +12,98 @@ use util_ipc::{IpcChannel, IpcHandle};
 use util_types::{Opcode, PowerOf2Usize};
 use zerocopy::{FromBytes, IntoBytes};
 
-/// A flash server that handles flash IPC requests.
-///
-/// This struct wraps an object implementing the `Flash` trait and provides
+/// An IPC server wrapper that accepts a flash implementation and exposes
 /// an IPC interface to it.
 pub struct FlashIpcServer<TFlash: Flash> {
     flash: TFlash,
+    locked_by: Option<usize>,
+    name: &'static str,
 }
 
 impl<TFlash: Flash<Error = ErrorCode>> FlashIpcServer<TFlash> {
     /// Creates a new `FlashIpcServer` wrapping the given flash implementation.
     pub fn new(flash: TFlash) -> Self {
-        Self { flash }
+        Self::new_with_name(flash, "flash")
+    }
+
+    /// Creates a new `FlashIpcServer` with a specific name for logging.
+    pub fn new_with_name(flash: TFlash, name: &'static str) -> Self {
+        Self {
+            flash,
+            locked_by: None,
+            name,
+        }
+    }
+
+    /// Returns `true` if the server is currently locked by any client.
+    pub fn is_locked(&self) -> bool {
+        self.locked_by.is_some()
+    }
+
+    /// Returns `true` if the server is locked by the specified token.
+    pub fn is_locked_by(&self, token: usize) -> bool {
+        self.locked_by == Some(token)
+    }
+
+    /// Forces setting the lock owner token directly (used when granting a pending lock).
+    pub fn force_lock(&mut self, token: usize) {
+        pw_log::info!(
+            "FlashIpcServer({}): locked by token {}",
+            self.name as &str,
+            token as u32
+        );
+        self.locked_by = Some(token);
+    }
+
+    fn handle_try_lock<'a>(&mut self, token: usize) -> Result<&'a [u8], ErrorCode> {
+        match self.locked_by {
+            None => {
+                pw_log::info!(
+                    "FlashIpcServer({}): locked by token {}",
+                    self.name as &str,
+                    token as u32
+                );
+                self.locked_by = Some(token);
+                Ok(&[])
+            }
+            Some(owner) => {
+                pw_log::warn!(
+                    "FlashIpcServer({}): lock request by token {} denied; already locked by token {}",
+                    self.name as &str,
+                    token as u32,
+                    owner as u32
+                );
+                Err(error::FLASH_GENERIC_LOCKED)
+            }
+        }
+    }
+
+    fn handle_unlock<'a>(&mut self, token: usize) -> Result<&'a [u8], ErrorCode> {
+        if self.locked_by == Some(token) {
+            pw_log::info!(
+                "FlashIpcServer({}): unlocked by token {}",
+                self.name as &str,
+                token as u32
+            );
+            self.locked_by = None;
+            Ok(&[])
+        } else {
+            if let Some(owner) = self.locked_by {
+                pw_log::warn!(
+                    "FlashIpcServer({}): unlock request by token {} denied; currently locked by token {}",
+                    self.name as &str,
+                    token as u32,
+                    owner as u32
+                );
+            } else {
+                pw_log::warn!(
+                    "FlashIpcServer({}): unlock request by token {} denied; server is not locked",
+                    self.name as &str,
+                    token as u32
+                );
+            }
+            Err(error::FLASH_GENERIC_NOT_LOCKED)
+        }
     }
 
     /// Handles the `IPC_OP_FLASH_GET_INFO` request.
@@ -93,13 +173,23 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashIpcServer<TFlash> {
         Ok(&data[..length])
     }
 
+    /// Handles an IPC operation for a given client token.
     fn handle_op<'a>(
         &mut self,
+        token: usize,
         opcode: Opcode,
         data: &'a mut [u8],
         reqsz: usize,
     ) -> Result<&'a [u8], ErrorCode> {
+        if let Some(owner) = self.locked_by {
+            if owner != token && opcode != IPC_OP_FLASH_TRY_LOCK && opcode != IPC_OP_FLASH_LOCK {
+                return Err(error::FLASH_GENERIC_LOCKED);
+            }
+        }
+
         match opcode {
+            IPC_OP_FLASH_TRY_LOCK | IPC_OP_FLASH_LOCK => self.handle_try_lock(token),
+            IPC_OP_FLASH_UNLOCK => self.handle_unlock(token),
             IPC_OP_FLASH_GET_INFO => self.handle_geometry(data, reqsz),
             IPC_OP_FLASH_ERASE => self.handle_erase(data, reqsz),
             IPC_OP_FLASH_PROGRAM => self.handle_program(data, reqsz),
@@ -108,19 +198,41 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashIpcServer<TFlash> {
         }
     }
 
-    /// Handles a single IPC request.
+    /// Handles a single IPC request using a default token (0).
+    pub fn handle_one(&mut self, ipc: &IpcHandle, data: &mut [u8]) -> Result<(), ErrorCode> {
+        self.handle_one_with_token(0, ipc, data).map(|_| ())
+    }
+
+    /// Handles a single IPC request with a specific client token.
     ///
     /// This method performs a non-blocking read on the IPC handle. The caller
     /// must ensure the handle is readable (e.g., by calling `syscall::object_wait`)
     /// before calling this method.
-    pub fn handle_one(&mut self, ipc: &IpcHandle, data: &mut [u8]) -> Result<(), ErrorCode> {
+    ///
+    /// Returns `Ok((opcode, status_result))` on processing the request. If the request
+    /// was a blocking `IPC_OP_FLASH_LOCK` attempt that failed because the server is locked,
+    /// `status_result` will be `Err(FLASH_GENERIC_LOCKED)` and `ipc.respond` is DEFERRED
+    /// (not called), allowing the caller (`FlashService`) to suspend the client.
+    pub fn handle_one_with_token(
+        &mut self,
+        token: usize,
+        ipc: &IpcHandle,
+        data: &mut [u8],
+    ) -> Result<(Opcode, Result<(), ErrorCode>), ErrorCode> {
         let len = ipc.read(0, data).map_err(ErrorCode::kernel_error)?;
-        let (opcode, reqrsp) = data.split_at_mut(core::mem::size_of::<Opcode>());
-        let opcode = Opcode::read_from_bytes(opcode).map_err(|_| error::IPC_ERROR_BAD_REQ_LEN)?;
+        let (opcode_bytes, reqrsp) = data.split_at_mut(core::mem::size_of::<Opcode>());
+        let opcode =
+            Opcode::read_from_bytes(opcode_bytes).map_err(|_| error::IPC_ERROR_BAD_REQ_LEN)?;
         let len = len.saturating_sub(core::mem::size_of::<Opcode>());
 
+        let res = self.handle_op(token, opcode, reqrsp, len);
+        if opcode == IPC_OP_FLASH_LOCK && res == Err(error::FLASH_GENERIC_LOCKED) {
+            // Defer response so client blocks in microkernel
+            return Ok((opcode, Err(error::FLASH_GENERIC_LOCKED)));
+        }
+
         let mut status = 0u32;
-        let result = match self.handle_op(opcode, reqrsp, len) {
+        let result = match res {
             Ok(result) => result,
             Err(e) => {
                 status = e.0.get();
@@ -129,6 +241,6 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashIpcServer<TFlash> {
         };
         ipc.respond(&[status.as_bytes(), result])
             .map_err(ErrorCode::kernel_error)?;
-        Ok(())
+        Ok((opcode, res.map(|_| ())))
     }
 }

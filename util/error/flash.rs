@@ -39,6 +39,11 @@ pub const FLASH_GENERIC_ERASE_INVALID_SIZE: ErrorCode =
 /// The flash device is not initialized.
 pub const FLASH_GENERIC_NOT_INITIALIZED: ErrorCode =
     FLASH_GENERIC.from_pw(10, Error::FailedPrecondition);
+/// The flash device is locked by another client.
+pub const FLASH_GENERIC_LOCKED: ErrorCode = FLASH_GENERIC.from_pw(11, Error::Unavailable);
+/// The flash device is not locked by the caller.
+pub const FLASH_GENERIC_NOT_LOCKED: ErrorCode =
+    FLASH_GENERIC.from_pw(12, Error::FailedPrecondition);
 
 /// SFDP: Invalid memory density.
 pub const FLASH_GENERIC_SFDP_INVALID_MEMORY_DENSITY: ErrorCode =

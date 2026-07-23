@@ -17,6 +17,12 @@ pub const IPC_OP_FLASH_PROGRAM: Opcode = Opcode::new(*b"FLWR");
 pub const IPC_OP_FLASH_READ: Opcode = Opcode::new(*b"FLRD");
 /// IPC opcode for retrieving flash information.
 pub const IPC_OP_FLASH_GET_INFO: Opcode = Opcode::new(*b"FLIN");
+/// IPC opcode for non-blocking lock attempt.
+pub const IPC_OP_FLASH_TRY_LOCK: Opcode = Opcode::new(*b"FLTL");
+/// IPC opcode for blocking lock attempt.
+pub const IPC_OP_FLASH_LOCK: Opcode = Opcode::new(*b"FLLK");
+/// IPC opcode for releasing flash lock.
+pub const IPC_OP_FLASH_UNLOCK: Opcode = Opcode::new(*b"FLUK");
 
 /// Information about the flash device.
 #[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
