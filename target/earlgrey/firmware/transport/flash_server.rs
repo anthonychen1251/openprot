@@ -57,6 +57,29 @@ use util_ipc::IpcChannel;
 use zerocopy::IntoBytes;
 
 #[derive(Zfmt)]
+#[zfmt(
+    format = "{name}: pending lock slot already occupied by token {existing_token}, denying token {new_token}"
+)]
+struct FlashServiceWaiterOccupied {
+    name: &'static str,
+    existing_token: u32,
+    new_token: u32,
+}
+
+#[derive(Zfmt)]
+#[zfmt(format = "{name}: token {token} pending lock deferred; removed from wait group")]
+struct FlashServiceBlockingWait {
+    name: &'static str,
+    token: u32,
+}
+
+#[derive(Zfmt)]
+#[zfmt(format = "{name}: token {token} granted pending lock")]
+struct FlashServiceGrantPendingLock {
+    name: &'static str,
+    token: u32,
+}
+
 struct FlashChannel {
     handle: u32,
     token: usize,
@@ -70,6 +93,7 @@ struct PendingWaiter {
 }
 
 struct FlashService<TFlash: Flash<Error = ErrorCode>> {
+    name: &'static str,
     server: FlashIpcServer<TFlash>,
     channels: &'static [FlashChannel],
     pending_lock: Option<PendingWaiter>,
@@ -88,7 +112,12 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashService<TFlash> {
                 .handle_one_with_token(current_token, &current_channel.ipc, buf)?;
 
         if opcode == IPC_OP_FLASH_LOCK && res.is_err() {
-            if self.pending_lock.is_some() {
+            if let Some(ref existing) = self.pending_lock {
+                util_zfmt::warn!(FlashServiceWaiterOccupied {
+                    name: self.name,
+                    existing_token: existing.token as u32,
+                    new_token: current_token as u32,
+                });
                 let status = util_error::FLASH_GENERIC_LOCKED.0.get();
                 let _ = current_channel.ipc.respond(&[status.as_bytes(), &[]]);
                 return Ok(());
@@ -96,6 +125,10 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashService<TFlash> {
 
             // Failed blocking lock attempt from non-owner client:
             // Remove channel from WAIT_GROUP and save as pending lock waiter (response was deferred)
+            util_zfmt::info!(FlashServiceBlockingWait {
+                name: self.name,
+                token: current_token as u32,
+            });
             let _ = syscall::wait_group_remove(handle::FLASH_WAIT_GROUP, current_channel.handle);
             self.pending_lock = Some(PendingWaiter {
                 token: current_token,
@@ -107,6 +140,10 @@ impl<TFlash: Flash<Error = ErrorCode>> FlashService<TFlash> {
 
         if opcode == IPC_OP_FLASH_UNLOCK && !self.server.is_locked() {
             if let Some(waiter) = self.pending_lock.take() {
+                util_zfmt::info!(FlashServiceGrantPendingLock {
+                    name: self.name,
+                    token: waiter.token as u32,
+                });
                 self.server.force_lock(waiter.token);
                 let status = 0u32;
                 let _ = waiter.ipc.respond(&[status.as_bytes(), &[]]);
@@ -150,7 +187,8 @@ fn flash_server() -> Result<(), ErrorCode> {
     ];
 
     let mut eflash_service = FlashService {
-        server: FlashIpcServer::new(eflash),
+        name: "eflash",
+        server: FlashIpcServer::new_with_name(eflash, "eflash"),
         channels: EFLASH_CHANNELS,
         pending_lock: None,
     };
@@ -188,7 +226,8 @@ fn flash_server() -> Result<(), ErrorCode> {
     ];
 
     let mut spi_flash_service = FlashService {
-        server: FlashIpcServer::new(spi_flash),
+        name: "spi_flash",
+        server: FlashIpcServer::new_with_name(spi_flash, "spi_flash"),
         channels: SPI_FLASH_CHANNELS,
         pending_lock: None,
     };
